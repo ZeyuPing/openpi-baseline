@@ -548,6 +548,11 @@ class TrainConfig:
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
+    # Optional parquet index used only by scripts/train_weighted.py.
+    sample_weight_index_path: str | None = None
+    # Samples with weights <= this threshold are ignored by weighted training.
+    min_sample_weight: float = 0.0
+
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.

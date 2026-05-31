@@ -133,12 +133,19 @@ def init_train_state(
     return train_state, state_sharding
 
 
-def _weighted_mean_loss(chunked_loss, sample_weight, *, min_sample_weight: float):
+def _weighted_mean_loss_and_metrics(chunked_loss, sample_weight, *, min_sample_weight: float):
     per_sample_loss = jnp.mean(chunked_loss, axis=-1)
-    sample_weight = jnp.asarray(sample_weight, dtype=per_sample_loss.dtype)
-    sample_weight = jnp.where(sample_weight > min_sample_weight, sample_weight, 0.0)
-    denom = jnp.maximum(jnp.sum(sample_weight), 1.0)
-    return jnp.sum(per_sample_loss * sample_weight) / denom
+    raw_sample_weight = jnp.asarray(sample_weight, dtype=per_sample_loss.dtype)
+    effective_sample_weight = jnp.where(raw_sample_weight > min_sample_weight, raw_sample_weight, 0.0)
+    sample_weight_sum = jnp.sum(effective_sample_weight)
+    denom = jnp.maximum(sample_weight_sum, 1.0)
+    weighted_loss = jnp.sum(per_sample_loss * effective_sample_weight) / denom
+    metrics = {
+        "sample_weight_sum": sample_weight_sum,
+        "nonzero_sample_weight_count": jnp.sum(effective_sample_weight > 0),
+        "raw_sample_weight_mean": jnp.mean(raw_sample_weight),
+    }
+    return weighted_loss, metrics
 
 
 @at.typecheck
@@ -160,14 +167,14 @@ def train_step(
         sample_weight: at.Array,
     ):
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return _weighted_mean_loss(chunked_loss, sample_weight, min_sample_weight=config.min_sample_weight)
+        return _weighted_mean_loss_and_metrics(chunked_loss, sample_weight, min_sample_weight=config.min_sample_weight)
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions, sample_weight = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+    (loss, loss_metrics), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
         model, train_rng, observation, actions, sample_weight
     )
 
@@ -198,7 +205,8 @@ def train_step(
         ),
     )
     info = {
-        "loss": loss,
+        "weighted_loss": loss,
+        **loss_metrics,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }

@@ -31,9 +31,10 @@ def segment_commander_states(states: Sequence[str]) -> list[CommanderSegment]:
 
 
 def chunk_is_mode_pure(states: Sequence[str], *, start: int, horizon: int) -> bool:
-    chunk = states[start : start + horizon]
-    if not chunk:
+    if start < 0 or horizon <= 0 or start + horizon > len(states):
         return False
+
+    chunk = states[start : start + horizon]
     return chunk[0] not in DROP_MODES and all(state == chunk[0] for state in chunk)
 
 

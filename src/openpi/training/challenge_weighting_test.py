@@ -19,6 +19,14 @@ def test_chunk_rejected_when_it_crosses_mode_boundary():
     assert not challenge_weighting.chunk_is_mode_pure(states, start=1, horizon=2)
 
 
+def test_chunk_rejected_when_window_is_invalid():
+    states = ["teleop"]
+    assert not challenge_weighting.chunk_is_mode_pure(states, start=0, horizon=2)
+    assert not challenge_weighting.chunk_is_mode_pure(states, start=-1, horizon=1)
+    assert not challenge_weighting.chunk_is_mode_pure(states, start=0, horizon=0)
+    assert not challenge_weighting.chunk_is_mode_pure(states, start=0, horizon=-1)
+
+
 def test_sample_weight_policy():
     assert challenge_weighting.sample_weight("expert-data", "inference", success=True) == 1.0
     assert challenge_weighting.sample_weight("success-and-hil-data", "teleop", success=True) == 2.0

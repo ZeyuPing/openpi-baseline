@@ -62,7 +62,7 @@ class WeightedTransformedDataset(Dataset[dict[str, Any]]):
         frame_index = _as_int_scalar(raw_sample["frame_index"])
         sample_weight = self._lookup.get(episode_index=episode_index, frame_index=frame_index)
 
-        transformed = self._transform(raw_sample)
+        transformed = dict(self._transform(raw_sample))
         transformed["sample_weight"] = np.float32(sample_weight)
         return transformed
 
@@ -92,16 +92,19 @@ def create_weighted_data_loader(
     skip_norm_stats: bool = False,
     framework: str = "jax",
 ):
-    if config.sample_weight_index_path is None:
+    sample_weight_index_path = getattr(config, "sample_weight_index_path", None)
+    if sample_weight_index_path is None:
         raise ValueError("sample_weight_index_path is required for weighted training")
     if framework != "jax":
         raise NotImplementedError("Weighted challenge training is currently implemented for JAX training only")
 
     data_config = config.data.create(config.assets_dirs, config.model)
+    if data_config.rlds_data_dir is not None:
+        raise NotImplementedError("Weighted challenge training only supports LeRobot datasets")
     dataset = _data_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
 
     norm_stats = {}
-    if not skip_norm_stats:
+    if data_config.repo_id != "fake" and not skip_norm_stats:
         if data_config.norm_stats is None:
             raise ValueError(
                 "Normalization stats not found. "
@@ -117,7 +120,7 @@ def create_weighted_data_loader(
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
         ],
-        WeightLookup.from_parquet(config.sample_weight_index_path),
+        WeightLookup.from_parquet(sample_weight_index_path),
     )
     torch_loader = _data_loader.TorchDataLoader(
         weighted_dataset,

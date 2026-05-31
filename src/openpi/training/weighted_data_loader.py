@@ -5,7 +5,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, SupportsIndex, TypeVar
 
+import jax
 import numpy as np
+
+import openpi.models.model as _model
+import openpi.transforms as _transforms
+from openpi.training import config as _config
+from openpi.training import data_loader as _data_loader
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -46,8 +52,6 @@ class WeightLookup:
 
 class WeightedTransformedDataset(Dataset[dict[str, Any]]):
     def __init__(self, dataset: Dataset[Mapping[str, Any]], transforms: Sequence[Any], lookup: WeightLookup):
-        import openpi.transforms as _transforms
-
         self._dataset = dataset
         self._transform = _transforms.compose(transforms)
         self._lookup = lookup
@@ -64,6 +68,68 @@ class WeightedTransformedDataset(Dataset[dict[str, Any]]):
 
     def __len__(self) -> int:
         return len(self._dataset)
+
+
+class WeightedDataLoaderImpl:
+    def __init__(self, data_config: _config.DataConfig, data_loader: _data_loader.TorchDataLoader):
+        self._data_config = data_config
+        self._data_loader = data_loader
+
+    def data_config(self) -> _config.DataConfig:
+        return self._data_config
+
+    def __iter__(self):
+        for batch in self._data_loader:
+            yield _model.Observation.from_dict(batch), batch["actions"], batch["sample_weight"]
+
+
+def create_weighted_data_loader(
+    config: _config.TrainConfig,
+    *,
+    sharding: jax.sharding.Sharding | None = None,
+    shuffle: bool = False,
+    num_batches: int | None = None,
+    skip_norm_stats: bool = False,
+    framework: str = "jax",
+):
+    if config.sample_weight_index_path is None:
+        raise ValueError("sample_weight_index_path is required for weighted training")
+    if framework != "jax":
+        raise NotImplementedError("Weighted challenge training is currently implemented for JAX training only")
+
+    data_config = config.data.create(config.assets_dirs, config.model)
+    dataset = _data_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
+
+    norm_stats = {}
+    if not skip_norm_stats:
+        if data_config.norm_stats is None:
+            raise ValueError(
+                "Normalization stats not found. "
+                "Make sure to run `scripts/compute_norm_stats.py --config-name=<your-config>`."
+            )
+        norm_stats = data_config.norm_stats
+
+    weighted_dataset = WeightedTransformedDataset(
+        dataset,
+        [
+            *data_config.repack_transforms.inputs,
+            *data_config.data_transforms.inputs,
+            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *data_config.model_transforms.inputs,
+        ],
+        WeightLookup.from_parquet(config.sample_weight_index_path),
+    )
+    torch_loader = _data_loader.TorchDataLoader(
+        weighted_dataset,
+        local_batch_size=config.batch_size // jax.process_count(),
+        sharding=sharding,
+        shuffle=shuffle,
+        num_batches=num_batches,
+        num_workers=config.num_workers,
+        seed=config.seed,
+        framework=framework,
+    )
+    return WeightedDataLoaderImpl(data_config, torch_loader)
 
 
 def _as_int_scalar(value: Any) -> int:

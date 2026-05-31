@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from collections.abc import Sequence
 
 import numpy as np
@@ -15,7 +16,7 @@ class CommanderSegment:
 
 
 def segment_commander_states(states: Sequence[str]) -> list[CommanderSegment]:
-    if not states:
+    if len(states) == 0:
         return []
 
     segments = []
@@ -41,6 +42,9 @@ def chunk_is_mode_pure(states: Sequence[str], *, start: int, horizon: int) -> bo
 def chunk_has_smooth_actions(
     actions: np.ndarray, *, start: int, horizon: int, max_abs_step: float = 0.2
 ) -> bool:
+    if start < 0 or horizon <= 0 or start + horizon > len(actions):
+        return False
+
     chunk = actions[start : start + horizon]
     if len(chunk) <= 1:
         return True
@@ -48,6 +52,8 @@ def chunk_has_smooth_actions(
 
 
 def sample_weight(source_name: str, commander_state: str, *, success: bool) -> float:
+    source_name = os.path.basename(source_name)
+
     if commander_state in DROP_MODES:
         return 0.0
     if source_name == "expert-data":

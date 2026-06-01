@@ -100,6 +100,7 @@ def _rows_for_parquet(
     parquet_path: Path,
     *,
     source_name_for_episode: Callable[[int], str | None],
+    provenance_path: Path | None = None,
     action_horizon: int,
     max_action_jump: float,
 ) -> list[dict]:
@@ -121,7 +122,12 @@ def _rows_for_parquet(
         episode_index = _scalar_int(df["episode_index"].iloc[row_idx])
         source_name = source_name_for_episode(episode_index)
         if source_name is None:
-            continue
+            if provenance_path is not None:
+                raise RuntimeError(
+                    f"Episode {episode_index} in {parquet_path} is not covered by provenance file "
+                    f"{provenance_path} for merged root {provenance_path.parent.parent}."
+                )
+            raise RuntimeError(f"Episode {episode_index} in {parquet_path} could not be resolved to a source.")
 
         mode = states[row_idx]
         rows.append(
@@ -154,17 +160,25 @@ def build_rows(task_root: Path, *, action_horizon: int, max_action_jump: float) 
         return rows
 
     if merged_root_has_provenance(task_root):
+        provenance_path = task_root / "meta" / "sources.jsonl"
         source_name_for_episode = _build_episode_source_resolver(task_root)
         for parquet_path in iter_merged_parquet_files(task_root):
             rows.extend(
                 _rows_for_parquet(
                     parquet_path,
                     source_name_for_episode=source_name_for_episode,
+                    provenance_path=provenance_path,
                     action_horizon=action_horizon,
                     max_action_jump=max_action_jump,
                 )
             )
-    return rows
+        return rows
+
+    raise RuntimeError(
+        f"Unrecognized task root layout at {task_root}. Expected either an original task root with one of "
+        f"{', '.join(f'{source}/data' for source in SOURCES)} or a merged LeRobot root with "
+        "meta/sources.jsonl and data/."
+    )
 
 
 def write_index(rows: list[dict], output: Path) -> None:

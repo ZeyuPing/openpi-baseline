@@ -1,3 +1,5 @@
+set -euo pipefail
+
 source setup_env.sh
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}

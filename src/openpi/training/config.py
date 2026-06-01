@@ -662,17 +662,18 @@ _CONFIGS = [
         num_workers=64,
         save_interval=40_000
     ),
+    # Weighted HIL configs use cluster-generated merged LeRobot roots from expert, success/HIL, and failure data.
     TrainConfig(
         name="pi05w_insert-mouse-battery_hil",
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
-            repo_id="insert-mouse-battery/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
+            repo_id="insert-mouse-battery/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/insert-mouse-battery-weighted-hil"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        sample_weight_index_path="/Your/path/to/indexes/insert-mouse-battery.parquet",
+        sample_weight_index_path="/Your/path/to/indexes/insert-mouse-battery-weighted-hil.parquet",
         num_train_steps=80_000,
         batch_size=32,
         num_workers=64,
@@ -682,13 +683,13 @@ _CONFIGS = [
         name="pi05w_seal-water-bottle-cap_hil",
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
-            repo_id="seal-water-bottle-cap/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
+            repo_id="seal-water-bottle-cap/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/seal-water-bottle-cap-weighted-hil"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        sample_weight_index_path="/Your/path/to/indexes/seal-water-bottle-cap.parquet",
+        sample_weight_index_path="/Your/path/to/indexes/seal-water-bottle-cap-weighted-hil.parquet",
         num_train_steps=80_000,
         batch_size=32,
         num_workers=64,
@@ -698,13 +699,13 @@ _CONFIGS = [
         name="pi05w_tower-of-hanoi-game_hil",
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
-            repo_id="tower-of-hanoi-game/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
+            repo_id="tower-of-hanoi-game/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/tower-of-hanoi-game-weighted-hil"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        sample_weight_index_path="/Your/path/to/indexes/tower-of-hanoi-game.parquet",
+        sample_weight_index_path="/Your/path/to/indexes/tower-of-hanoi-game-weighted-hil.parquet",
         num_train_steps=80_000,
         batch_size=32,
         num_workers=64,

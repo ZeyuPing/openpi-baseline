@@ -30,7 +30,7 @@ Weighted `pi05w_*` configs do not point at the expert-only dataset. They expect 
 $CHALLENGE_ROOT/weighted-datasets/<task>-weighted-hil
 ```
 
-Create each weighted root on the cluster from all three task sources before running a `pi05w_*` config:
+For each `pi05w_*_hil` config, create one weighted root on the cluster from all three task sources before training:
 
 ```bash
 uv run python scripts/merge_lerobot.py \
@@ -70,6 +70,12 @@ uv run python scripts/build_challenge_index.py \
 
 The index path must describe the same merged root that the weighted config reads. For example, `pi05w_insert-mouse-battery_hil` should use the merged root `$CHALLENGE_ROOT/weighted-datasets/insert-mouse-battery-weighted-hil` and index `$CHALLENGE_ROOT/indexes/insert-mouse-battery-weighted-hil.parquet`.
 
+Before running `train_weighted.sh`, update the `/Your/path/to/...` placeholders for the matching `pi05w_*_hil` entry in `src/openpi/training/config.py`, or pass equivalent CLI overrides for the dataset root and `sample_weight_index_path`. The weighted training workflow is:
+
+1. Merge `expert-data`, `success-and-hil-data`, and `failure-data` into `$CHALLENGE_ROOT/weighted-datasets/<task>-weighted-hil`.
+2. Build the sample-weight index from that merged root.
+3. Point the weighted config or CLI overrides at that same merged root and index.
+
 The index builder follows the same frame/action convention as the baseline and rejects chunks that cross `observation.commander_state` boundaries or contain large action discontinuities.
 
 ## Conversion Consistency
@@ -93,7 +99,7 @@ Run these checks from the repository root unless a command says otherwise.
 | Static compile | `uv run python -m py_compile scripts/build_challenge_index.py scripts/train_weighted.py` | Both weighted entry points compile. |
 | Official baseline | `bash train.sh pi05_insert-mouse-battery` | Baseline still launches against the official `pi05_*` config. |
 | Experimental weighted | `bash train_weighted.sh pi05w_insert-mouse-battery_hil` | Weighted run launches against the merged weighted root and matching index. |
-| Policy server | `uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05w_insert-mouse-battery_hil --policy.dir=checkpoints/pi05w_insert-mouse-battery_hil/pi05w_insert-mouse-battery_hil/80000` | Server starts and loads the weighted checkpoint. |
+| Policy server | `uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05w_insert-mouse-battery_hil --policy.dir=checkpoints/pi05w_insert-mouse-battery_hil/pi05w_insert-mouse-battery_hil/79999` | Server starts and loads the weighted checkpoint for an 80,000-step run. |
 | Simulation compare | `cd ../policy_deployment && python sim/check_in_sim.py --mode compare --bundle sim/assets/example_slim.pkl --host 127.0.0.1 --port 8000 --prompt "Insert the battery to the mouse." --action-horizon 50 --output out/weighted_compare.mp4` | Sim client can compare the served weighted policy and write an output video. |
 
 For cluster runs, complete the weighted-root merge and index build before the experimental weighted command. For local/laptop sanity work, run only static checks; do not fetch or create the challenge dataset locally.

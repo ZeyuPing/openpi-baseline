@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,48 @@ def iter_parquet_files(task_root: Path):
             yield source_name, parquet_path
 
 
+def original_task_root_has_leaves(task_root: Path) -> bool:
+    return any((task_root / source_name / "data").exists() for source_name in SOURCES)
+
+
+def merged_root_has_provenance(task_root: Path) -> bool:
+    return (task_root / "meta" / "sources.jsonl").is_file() and (task_root / "data").is_dir()
+
+
+def _read_source_ranges(task_root: Path) -> list[tuple[int, int, str]]:
+    source_ranges: list[tuple[int, int, str]] = []
+    with (task_root / "meta" / "sources.jsonl").open("r", encoding="utf-8") as provenance:
+        for line in provenance:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            source_ranges.append(
+                (
+                    int(entry["episode_index_start"]),
+                    int(entry["episode_index_end"]),
+                    Path(entry["source_path"]).name,
+                )
+            )
+    return source_ranges
+
+
+def _build_episode_source_resolver(task_root: Path) -> Callable[[int], str | None]:
+    source_ranges = _read_source_ranges(task_root)
+
+    def resolve(episode_index: int) -> str | None:
+        for start, end, source_name in source_ranges:
+            if start <= episode_index <= end:
+                return source_name
+        return None
+
+    return resolve
+
+
+def iter_merged_parquet_files(task_root: Path) -> Iterable[Path]:
+    yield from sorted((task_root / "data").rglob("*.parquet"))
+
+
 def _scalar_int(value) -> int:
     value = np.asarray(value)
     return int(value.reshape(-1)[0])
@@ -53,35 +96,73 @@ def _stack_actions(action_values) -> np.ndarray:
     return np.stack([np.asarray(action, dtype=np.float32) for action in action_values])
 
 
-def build_rows(task_root: Path, *, action_horizon: int, max_action_jump: float) -> list[dict]:
+def _rows_for_parquet(
+    parquet_path: Path,
+    *,
+    source_name_for_episode: Callable[[int], str | None],
+    action_horizon: int,
+    max_action_jump: float,
+) -> list[dict]:
     rows: list[dict] = []
-    for source_name, parquet_path in iter_parquet_files(task_root):
-        df = pd.read_parquet(parquet_path)
-        if "observation.commander_state" not in df.columns or "action" not in df.columns:
+    df = pd.read_parquet(parquet_path)
+    if "observation.commander_state" not in df.columns or "action" not in df.columns:
+        return rows
+
+    states = [str(state) for state in df["observation.commander_state"].tolist()]
+    actions = _stack_actions(df["action"].to_numpy())
+    for row_idx in range(len(df)):
+        if not challenge_weighting.chunk_is_mode_pure(states, start=row_idx, horizon=action_horizon):
+            continue
+        if not challenge_weighting.chunk_has_smooth_actions(
+            actions, start=row_idx, horizon=action_horizon, max_abs_step=max_action_jump
+        ):
             continue
 
-        states = [str(state) for state in df["observation.commander_state"].tolist()]
-        actions = _stack_actions(df["action"].to_numpy())
-        for row_idx in range(len(df)):
-            if not challenge_weighting.chunk_is_mode_pure(states, start=row_idx, horizon=action_horizon):
-                continue
-            if not challenge_weighting.chunk_has_smooth_actions(
-                actions, start=row_idx, horizon=action_horizon, max_abs_step=max_action_jump
-            ):
-                continue
+        episode_index = _scalar_int(df["episode_index"].iloc[row_idx])
+        source_name = source_name_for_episode(episode_index)
+        if source_name is None:
+            continue
 
-            mode = states[row_idx]
-            rows.append(
-                {
-                    "source_name": source_name,
-                    "episode_index": _scalar_int(df["episode_index"].iloc[row_idx]),
-                    "frame_index": _scalar_int(df["frame_index"].iloc[row_idx]),
-                    "commander_state": mode,
-                    "sample_weight": challenge_weighting.sample_weight(
-                        source_name, mode, success=_episode_success(source_name)
-                    ),
-                    "parquet_path": str(parquet_path),
-                }
+        mode = states[row_idx]
+        rows.append(
+            {
+                "source_name": source_name,
+                "episode_index": episode_index,
+                "frame_index": _scalar_int(df["frame_index"].iloc[row_idx]),
+                "commander_state": mode,
+                "sample_weight": challenge_weighting.sample_weight(
+                    source_name, mode, success=_episode_success(source_name)
+                ),
+                "parquet_path": str(parquet_path),
+            }
+        )
+    return rows
+
+
+def build_rows(task_root: Path, *, action_horizon: int, max_action_jump: float) -> list[dict]:
+    rows: list[dict] = []
+    if original_task_root_has_leaves(task_root):
+        for source_name, parquet_path in iter_parquet_files(task_root):
+            rows.extend(
+                _rows_for_parquet(
+                    parquet_path,
+                    source_name_for_episode=lambda _episode_index, source_name=source_name: source_name,
+                    action_horizon=action_horizon,
+                    max_action_jump=max_action_jump,
+                )
+            )
+        return rows
+
+    if merged_root_has_provenance(task_root):
+        source_name_for_episode = _build_episode_source_resolver(task_root)
+        for parquet_path in iter_merged_parquet_files(task_root):
+            rows.extend(
+                _rows_for_parquet(
+                    parquet_path,
+                    source_name_for_episode=source_name_for_episode,
+                    action_horizon=action_horizon,
+                    max_action_jump=max_action_jump,
+                )
             )
     return rows
 

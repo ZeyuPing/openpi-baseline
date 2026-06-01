@@ -87,6 +87,31 @@ def iter_merged_parquet_files(task_root: Path) -> Iterable[Path]:
     yield from sorted((task_root / "data").rglob("*.parquet"))
 
 
+def _episode_indices_in_parquet(parquet_path: Path) -> set[int]:
+    df = pd.read_parquet(parquet_path, columns=["episode_index"])
+    return {_scalar_int(value) for value in df["episode_index"].to_numpy()}
+
+
+def _validate_merged_provenance_coverage(
+    parquet_paths: Iterable[Path],
+    *,
+    source_name_for_episode: Callable[[int], str | None],
+    provenance_path: Path,
+) -> None:
+    missing_episode_indices: set[int] = set()
+    for parquet_path in parquet_paths:
+        for episode_index in _episode_indices_in_parquet(parquet_path):
+            if source_name_for_episode(episode_index) is None:
+                missing_episode_indices.add(episode_index)
+
+    if missing_episode_indices:
+        missing = ", ".join(str(episode_index) for episode_index in sorted(missing_episode_indices))
+        raise RuntimeError(
+            f"Merged root {provenance_path.parent.parent} has episode_index values not covered by provenance file "
+            f"{provenance_path}: {missing}."
+        )
+
+
 def _scalar_int(value) -> int:
     value = np.asarray(value)
     return int(value.reshape(-1)[0])
@@ -162,7 +187,13 @@ def build_rows(task_root: Path, *, action_horizon: int, max_action_jump: float) 
     if merged_root_has_provenance(task_root):
         provenance_path = task_root / "meta" / "sources.jsonl"
         source_name_for_episode = _build_episode_source_resolver(task_root)
-        for parquet_path in iter_merged_parquet_files(task_root):
+        parquet_paths = list(iter_merged_parquet_files(task_root))
+        _validate_merged_provenance_coverage(
+            parquet_paths,
+            source_name_for_episode=source_name_for_episode,
+            provenance_path=provenance_path,
+        )
+        for parquet_path in parquet_paths:
             rows.extend(
                 _rows_for_parquet(
                     parquet_path,

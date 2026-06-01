@@ -55,17 +55,21 @@ def merged_root_has_provenance(task_root: Path) -> bool:
 
 def _read_source_ranges(task_root: Path) -> list[tuple[int, int, str]]:
     source_ranges: list[tuple[int, int, str]] = []
-    with (task_root / "meta" / "sources.jsonl").open("r", encoding="utf-8") as provenance:
+    provenance_path = task_root / "meta" / "sources.jsonl"
+    with provenance_path.open("r", encoding="utf-8") as provenance:
         for line in provenance:
             line = line.strip()
             if not line:
                 continue
             entry = json.loads(line)
+            source_name = Path(entry["source_path"]).name
+            if source_name not in SOURCES:
+                raise RuntimeError(f"Unknown source name {source_name!r} in provenance file {provenance_path}.")
             source_ranges.append(
                 (
                     int(entry["episode_index_start"]),
                     int(entry["episode_index_end"]),
-                    Path(entry["source_path"]).name,
+                    source_name,
                 )
             )
     return source_ranges

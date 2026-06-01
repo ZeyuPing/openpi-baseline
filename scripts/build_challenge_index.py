@@ -217,6 +217,12 @@ def build_rows(task_root: Path, *, action_horizon: int, max_action_jump: float) 
 
 
 def write_index(rows: list[dict], output: Path) -> None:
+    if not rows:
+        raise RuntimeError(
+            "No usable rows were produced for the challenge weight index. Check that the task root contains matching "
+            "data, provenance covers the merged episodes, and the action-horizon/max-action-jump filters are not "
+            "rejecting every frame."
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=INDEX_COLUMNS).to_parquet(output, index=False)
     summary = {

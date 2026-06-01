@@ -28,10 +28,10 @@ class Dataset(Protocol[T_co]):
 @dataclasses.dataclass(frozen=True)
 class WeightLookup:
     weights: dict[tuple[int, int], float]
-    default_weight: float = 1.0
+    default_weight: float = 0.0
 
     @classmethod
-    def from_parquet(cls, path: str | Path, default_weight: float = 1.0) -> "WeightLookup":
+    def from_parquet(cls, path: str | Path, default_weight: float = 0.0) -> "WeightLookup":
         import pandas as pd
 
         frame = pd.read_parquet(path)

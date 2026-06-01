@@ -11,6 +11,15 @@ def test_index_lookup_returns_default_for_missing_key(tmp_path):
     lookup = weighted_data_loader.WeightLookup.from_parquet(index_path)
 
     assert lookup.get(episode_index=3, frame_index=7) == 2.0
+    assert lookup.get(episode_index=3, frame_index=8) == 0.0
+
+
+def test_index_lookup_allows_explicit_missing_weight_override(tmp_path):
+    index_path = tmp_path / "index.parquet"
+    pd.DataFrame([{"episode_index": 3, "frame_index": 7, "sample_weight": 2.0}]).to_parquet(index_path, index=False)
+
+    lookup = weighted_data_loader.WeightLookup.from_parquet(index_path, default_weight=1.0)
+
     assert lookup.get(episode_index=3, frame_index=8) == 1.0
 
 

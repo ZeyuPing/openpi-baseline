@@ -77,6 +77,7 @@ Before running `train_weighted.sh`, update the `/Your/path/to/...` placeholders 
 3. Point the weighted config or CLI overrides at that same merged root and index.
 
 The index builder follows the same frame/action convention as the baseline and rejects chunks that cross `observation.commander_state` boundaries or contain large action discontinuities.
+Frames absent from the index receive zero sample weight during weighted training, so omitted entries are treated as filtered/rejected samples. Empty indexes are errors; if index construction produces no usable rows, check the filters, action horizon, and merged-root provenance before training.
 
 ## Conversion Consistency
 

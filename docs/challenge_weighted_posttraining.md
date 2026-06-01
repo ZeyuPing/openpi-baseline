@@ -8,6 +8,23 @@ bash train.sh pi05_insert-mouse-battery
 
 The weighted path is additive. It uses new `pi05w_*` configs and `train_weighted.sh`, so baseline runs and weighted runs remain easy to compare.
 
+## Method Summary
+
+The current weighted post-training method keeps the official `pi05_*` baseline intact for comparison and adds task-specific `pi05w_*` configs for experiments. Each weighted run starts from a merged LeRobot root that combines the task's `expert-data`, `success-and-hil-data`, and `failure-data` sources.
+
+For each merged root, build a frame-level/chunk-start weight index aligned to that root's `episode_index` and `frame_index`. The index keeps only chunks that are valid for actor imitation: it filters out chunks crossing `observation.commander_state` boundaries, chunks in drop modes (`restore`, `align`, `pre_teleop`), discontinuous action chunks, and short tails that cannot provide the configured action horizon. Any frame missing from the index receives zero actor weight during training.
+
+Current actor imitation weights are:
+
+| Source segment | Actor weight |
+| --- | ---: |
+| `expert-data` | 1.0 |
+| `success-and-hil-data` teleop | 2.0 |
+| `success-and-hil-data` inference success | 0.7 |
+| `failure-data` | 0.0 |
+
+Weighted training uses the same conversion sequence as the baseline: repack, data transforms, `Normalize`, then model transforms. The only intended difference is the sample weighting applied to actor imitation.
+
 ## Dataset Location
 
 Do not download the challenge dataset on the laptop. Download and process it only on the training cluster.
@@ -89,6 +106,24 @@ Weighted training must use the same conversion sequence as the baseline:
 4. `model_transforms`
 
 This keeps YAM joint flips, gripper conversion, delta-action handling, image resizing, prompt tokenization, and normalization aligned with the official baseline.
+
+## Iteration Guide
+
+Start with one task before broadening the sweep, preferably `seal-water-bottle-cap` or `tower-of-hanoi-game`. Track baseline and weighted runs with the same seed/config wherever possible so changes are attributable to the weighting method rather than run setup.
+
+During weighted runs, inspect `weighted_loss`, `sample_weight_sum`, `nonzero_sample_weight_count`, and `raw_sample_weight_mean`. If `nonzero_sample_weight_count` is low, inspect the index summary and filtering thresholds before spending more cluster time on longer training.
+
+Suggested iteration knobs:
+
+| Knob | What to vary |
+| --- | --- |
+| Source weights | Adjust expert, HIL teleop, inference-success, and failure actor weights. |
+| Max action jump | Loosen or tighten the discontinuity filter. |
+| Action horizon | Match chunk length to the task and policy-serving horizon. |
+| Merged source composition | Include or exclude specific source subsets for a task. |
+| Contact segment weighting | Upweight task-specific contact or manipulation phases once identified. |
+
+Keep new method families under new config prefixes, such as `pi05awr_*`, so comparisons remain clean. A future stage should train a value/progress model and replace static source weights with clipped advantage weights, but keep that separate from `pi05w_*` results.
 
 ## Verification Matrix
 

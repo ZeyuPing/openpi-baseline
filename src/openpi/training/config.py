@@ -662,6 +662,54 @@ _CONFIGS = [
         num_workers=64,
         save_interval=40_000
     ),
+    TrainConfig(
+        name="pi05w_insert-mouse-battery_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="insert-mouse-battery/expert-data",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/insert-mouse-battery.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
+    TrainConfig(
+        name="pi05w_seal-water-bottle-cap_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="seal-water-bottle-cap/expert-data",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/seal-water-bottle-cap.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
+    TrainConfig(
+        name="pi05w_tower-of-hanoi-game_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="tower-of-hanoi-game/expert-data",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/tower-of-hanoi-game.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
     #
     # Inference Aloha configs.
     #

@@ -117,13 +117,13 @@ Suggested iteration knobs:
 
 | Knob | What to vary |
 | --- | --- |
-| Source weights | Adjust expert, HIL teleop, inference-success, and failure actor weights. |
+| Source weights | Adjust expert, HIL teleop, and inference-success actor weights; keep failure-data actor weight at `0.0` for `pi05w_*` so failure trajectories are not imitated. |
 | Max action jump | Loosen or tighten the discontinuity filter. |
 | Action horizon | Match chunk length to the task and policy-serving horizon. |
 | Merged source composition | Include or exclude specific source subsets for a task. |
 | Contact segment weighting | Upweight task-specific contact or manipulation phases once identified. |
 
-Keep new method families under new config prefixes, such as `pi05awr_*`, so comparisons remain clean. A future stage should train a value/progress model and replace static source weights with clipped advantage weights, but keep that separate from `pi05w_*` results.
+Keep new method families under new config prefixes, such as `pi05awr_*`, so comparisons remain clean. A future stage should train a value/progress model and replace static source weights with clipped advantage weights, but keep that separate from `pi05w_*` results. If future work uses failure data as negative, value, or progress data, or gives it any nonzero actor semantics, it should live in a separate method family/config prefix with explicit semantics.
 
 ## Verification Matrix
 

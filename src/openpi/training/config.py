@@ -711,6 +711,55 @@ _CONFIGS = [
         num_workers=64,
         save_interval=20_000
     ),
+    # Takeover-aware AWR configs use the same merged roots as pi05w_* but read advantage-derived indexes.
+    TrainConfig(
+        name="pi05awr_insert-mouse-battery_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="insert-mouse-battery/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/insert-mouse-battery-weighted-hil"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/insert-mouse-battery-takeover-awr.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
+    TrainConfig(
+        name="pi05awr_seal-water-bottle-cap_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="seal-water-bottle-cap/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/seal-water-bottle-cap-weighted-hil"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/seal-water-bottle-cap-takeover-awr.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
+    TrainConfig(
+        name="pi05awr_tower-of-hanoi-game_hil",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="tower-of-hanoi-game/weighted-hil",
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/weighted-datasets/tower-of-hanoi-game-weighted-hil"),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        sample_weight_index_path="/Your/path/to/indexes/tower-of-hanoi-game-takeover-awr.parquet",
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000
+    ),
     #
     # Inference Aloha configs.
     #

@@ -8,5 +8,6 @@
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "ros.distro": "humble"
+    "ros.distro": "humble",
+    "cmake.ignoreCMakeListsMissing": true
 }

@@ -81,6 +81,69 @@ uv run scripts/merge_lerobot.py \
 
 This script refers to the implementation in [kai0](https://github.com/OpenDriveLab/kai0).
 
+### 5. Experimental weighted and AWR post-training
+
+This branch also contains an additive challenge post-training path. The official `pi05_*` expert-only configs and `train.sh` remain the baseline. Experimental configs use separate names:
+
+- `pi05w_*_hil`: static weighted SFT over merged expert, success/HIL, and failure data.
+- `pi05awr_*_hil`: takeover-aware Monte-Carlo value targets plus clipped AWR sample weights.
+
+Build these datasets and indexes on the training cluster. Do not assume the full challenge dataset exists on a laptop.
+
+First merge each task's three source leaves into one LeRobot root:
+
+```bash
+uv run python scripts/merge_lerobot.py \
+  --src_paths \
+    "$DATASET_ROOT/seal-water-bottle-cap/expert-data" \
+    "$DATASET_ROOT/seal-water-bottle-cap/success-and-hil-data" \
+    "$DATASET_ROOT/seal-water-bottle-cap/failure-data" \
+  --tgt_path "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
+  --repo_id "seal-water-bottle-cap/weighted-hil"
+```
+
+For static weighted SFT, build the frame-level sample-weight index and train with the weighted entry point:
+
+```bash
+uv run python scripts/build_challenge_index.py \
+  --task-root "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
+  --output "$CHALLENGE_ROOT/indexes/seal-water-bottle-cap-weighted-hil.parquet"
+
+bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+For takeover-aware AWR, generate value targets, extract baseline-aligned pi0.5 prefix features, train the value model, build the AWR index, then run weighted training:
+
+```bash
+uv run python scripts/build_takeover_value_targets.py \
+  --task-root "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
+  --output "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet"
+
+uv run python scripts/extract_takeover_visual_features.py \
+  --config-name pi05awr_seal-water-bottle-cap_hil \
+  --targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
+  --output-dir "$CHALLENGE_ROOT/value-features/seal-water-bottle-cap"
+
+uv run python scripts/train_takeover_value_model.py \
+  --targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
+  --features-dir "$CHALLENGE_ROOT/value-features/seal-water-bottle-cap" \
+  --predictions "$CHALLENGE_ROOT/value-predictions/seal-water-bottle-cap.parquet" \
+  --checkpoint "$CHALLENGE_ROOT/value-checkpoints/seal-water-bottle-cap.pt" \
+  --fail-on-validation
+
+uv run python scripts/build_takeover_awr_index.py \
+  --task-root "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
+  --value-targets "$CHALLENGE_ROOT/value-predictions/seal-water-bottle-cap.parquet" \
+  --output "$CHALLENGE_ROOT/indexes/seal-water-bottle-cap-takeover-awr.parquet" \
+  --rho 0.25
+
+bash train_weighted.sh pi05awr_seal-water-bottle-cap_hil
+```
+
+The feature extractor intentionally reuses the configured baseline data loader, transform sequence, pi0.5 model construction, and checkpoint weight loader. It does not read raw videos or load a standalone vision tower. The value model consumes the cached pi0.5 prefix features as additional inputs and fails on missing feature files by default.
+
+Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
+
 ---
 
 # openpi

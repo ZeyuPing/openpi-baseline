@@ -112,7 +112,7 @@ uv run python scripts/build_challenge_index.py \
 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-For takeover-aware AWR, generate value targets, extract baseline-aligned pi0.5 prefix features, train the value model, build the AWR index, then run weighted training:
+For takeover-aware AWR, generate value targets, extract baseline-aligned pi0.5 prefix token features, train the value model, build the AWR index, then run weighted training:
 
 ```bash
 uv run python scripts/build_takeover_value_targets.py \
@@ -140,7 +140,7 @@ uv run python scripts/build_takeover_awr_index.py \
 bash train_weighted.sh pi05awr_seal-water-bottle-cap_hil
 ```
 
-The feature extractor intentionally reuses the configured baseline data loader, transform sequence, pi0.5 model construction, and checkpoint weight loader. It does not read raw videos or load a standalone vision tower. The value model consumes the cached pi0.5 prefix features as additional inputs and fails on missing feature files by default.
+The feature extractor intentionally reuses the configured baseline data loader, transform sequence, pi0.5 model construction, and checkpoint weight loader. It does not read raw videos or load a standalone vision tower. It caches frozen pi0.5 prefix token activations plus token masks from the same image/language path used to initialize action sampling. The value model consumes those cached tokens with a small IG-RFT-style learned-query cross-attention aggregator, concatenates proprioception and task/mode metadata, and fails on missing feature files by default.
 
 Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
 

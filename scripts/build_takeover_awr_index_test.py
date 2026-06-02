@@ -115,6 +115,8 @@ def test_train_takeover_value_model(tmp_path):
         checkpoint=checkpoint_path,
         metrics=None,
         hidden_dim=8,
+        query_count=2,
+        attention_heads=2,
         batch_size=2,
         epochs=2,
         lr=1e-3,
@@ -124,7 +126,7 @@ def test_train_takeover_value_model(tmp_path):
         device="cpu",
         fail_on_validation=False,
         features_dir=None,
-        feature_key="pi05_prefix",
+        feature_key="pi05_prefix_tokens",
         allow_missing_features=False,
     )
 
@@ -170,6 +172,8 @@ def test_train_takeover_value_model_uses_preextracted_features(tmp_path):
         checkpoint=tmp_path / "checkpoint_with_features.pt",
         metrics=None,
         hidden_dim=8,
+        query_count=2,
+        attention_heads=2,
         batch_size=2,
         epochs=1,
         lr=1e-3,
@@ -186,6 +190,69 @@ def test_train_takeover_value_model_uses_preextracted_features(tmp_path):
     metrics = train_takeover_value_model.train(args)
 
     assert metrics["visual_feature_dim"] == 3
+    assert metrics["visual_token_count"] == 1
+    assert args.predictions.exists()
+    assert args.checkpoint.exists()
+
+
+def test_train_takeover_value_model_uses_token_features(tmp_path):
+    from scripts import train_takeover_value_model
+    import argparse
+
+    _write_episode(tmp_path, "success-and-hil-data", 0, ["inference", "inference", "teleop", "teleop"])
+    _write_episode(tmp_path, "failure-data", 1, ["inference", "inference"])
+
+    target_rows = build_takeover_value_targets.build_rows(
+        tmp_path,
+        risk_window_frames=1,
+        step_penalty=-1.0,
+        failure_terminal_penalty=-50.0,
+        takeover_risk_penalty=-2.0,
+        teleop_bonus=0.0,
+    )
+    targets_path = tmp_path / "targets.parquet"
+    build_takeover_value_targets.write_targets(target_rows, targets_path)
+
+    features_dir = tmp_path / "features"
+    (features_dir / "success-and-hil-data").mkdir(parents=True)
+    (features_dir / "failure-data").mkdir(parents=True)
+    np.savez_compressed(
+        features_dir / "success-and-hil-data" / "episode_000000_pi05_prefix_tokens.npz",
+        features=np.ones((4, 5, 3), dtype=np.float32),
+        mask=np.ones((4, 5), dtype=bool),
+    )
+    np.savez_compressed(
+        features_dir / "failure-data" / "episode_000001_pi05_prefix_tokens.npz",
+        features=np.zeros((2, 5, 3), dtype=np.float32),
+        mask=np.ones((2, 5), dtype=bool),
+    )
+
+    args = argparse.Namespace(
+        targets=targets_path,
+        predictions=tmp_path / "predictions_with_token_features.parquet",
+        checkpoint=tmp_path / "checkpoint_with_token_features.pt",
+        metrics=None,
+        hidden_dim=8,
+        query_count=2,
+        attention_heads=2,
+        batch_size=2,
+        epochs=1,
+        lr=1e-3,
+        weight_decay=1e-4,
+        val_fraction=0.5,
+        seed=42,
+        device="cpu",
+        fail_on_validation=False,
+        features_dir=features_dir,
+        feature_key="pi05_prefix_tokens",
+        allow_missing_features=False,
+    )
+
+    metrics = train_takeover_value_model.train(args)
+
+    assert metrics["visual_feature_dim"] == 3
+    assert metrics["visual_token_count"] == 5
+    assert metrics["value_model_architecture"] == "token_cross_attention_value"
     assert args.predictions.exists()
     assert args.checkpoint.exists()
 
@@ -213,6 +280,8 @@ def test_train_takeover_value_model_rejects_missing_preextracted_features(tmp_pa
         checkpoint=tmp_path / "checkpoint.pt",
         metrics=None,
         hidden_dim=8,
+        query_count=2,
+        attention_heads=2,
         batch_size=1,
         epochs=1,
         lr=1e-3,
@@ -222,7 +291,7 @@ def test_train_takeover_value_model_rejects_missing_preextracted_features(tmp_pa
         device="cpu",
         fail_on_validation=False,
         features_dir=tmp_path / "missing_features",
-        feature_key="pi05_prefix",
+        feature_key="pi05_prefix_tokens",
         allow_missing_features=False,
     )
 

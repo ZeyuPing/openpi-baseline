@@ -174,7 +174,7 @@ Train a frozen-feature value model, not a full end-to-end actor-critic.
 
 Inputs should include:
 
-- image features from the existing pi0.5/paligemma path or a lightweight visual encoder,
+- token-level image/language features from the existing pi0.5/PaliGemma prefix path,
 - the task prompt or task id,
 - `observation.state` explicitly as numeric proprioception,
 - optional commander-state embeddings for value training only.
@@ -183,8 +183,12 @@ Outputs:
 
 - `V(s)`: normalized Monte-Carlo return / negative steps-to-success.
 
-Do not pool only over raw prefix embeddings if that drops proprioception. Contact-heavy tasks need
-state and gripper information.
+For the Stage A implementation, prefer the IG-RFT-style frozen-feature critic pattern: cache
+pi0.5 prefix token activations and masks, aggregate them with a small learned-query cross-attention
+module, then fuse the visual-language summary with proprioception, task id, and commander-state
+metadata before the scalar value head. Do not reduce the VLA features to a fixed mean-pooled vector
+before value training, and do not drop proprioception. Contact-heavy tasks need state and gripper
+information.
 
 Training targets:
 

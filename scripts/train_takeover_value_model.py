@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -12,22 +13,91 @@ import torch
 
 
 COMMANDER_MODES = ("inference", "teleop", "pre_teleop", "restore", "align")
-DEFAULT_FEATURE_KEY = "pi05_prefix"
+DEFAULT_FEATURE_KEY = "pi05_prefix_tokens"
 
 
-class ValueNet(torch.nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int):
+@dataclasses.dataclass(frozen=True)
+class VisualFeatureBatch:
+    tokens: np.ndarray
+    mask: np.ndarray
+
+
+class TokenValueNet(torch.nn.Module):
+    def __init__(
+        self,
+        *,
+        state_dim: int,
+        visual_dim: int,
+        hidden_dim: int,
+        query_count: int,
+        attention_heads: int,
+    ):
         super().__init__()
-        self.backbone = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, hidden_dim),
+        if query_count <= 0:
+            raise ValueError("query_count must be positive.")
+        if attention_heads <= 0:
+            raise ValueError("attention_heads must be positive.")
+        if visual_dim > 0 and hidden_dim % attention_heads != 0:
+            raise ValueError("hidden_dim must be divisible by attention_heads when visual features are used.")
+
+        self.visual_dim = visual_dim
+        self.state_proj = torch.nn.Sequential(
+            torch.nn.Linear(state_dim, hidden_dim),
+            torch.nn.ReLU(),
+        )
+        if visual_dim > 0:
+            self.token_proj = torch.nn.Sequential(
+                torch.nn.LayerNorm(visual_dim),
+                torch.nn.Linear(visual_dim, hidden_dim),
+            )
+            self.query_tokens = torch.nn.Parameter(torch.empty(query_count, hidden_dim))
+            torch.nn.init.normal_(self.query_tokens, std=0.02)
+            self.cross_attn = torch.nn.MultiheadAttention(
+                embed_dim=hidden_dim,
+                num_heads=attention_heads,
+                batch_first=True,
+            )
+            self.visual_norm = torch.nn.LayerNorm(hidden_dim)
+            fusion_dim = hidden_dim * 2
+        else:
+            self.token_proj = None
+            self.query_tokens = None
+            self.cross_attn = None
+            self.visual_norm = None
+            fusion_dim = hidden_dim
+
+        self.fusion = torch.nn.Sequential(
+            torch.nn.Linear(fusion_dim, hidden_dim),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_dim, hidden_dim),
             torch.nn.ReLU(),
         )
         self.value_head = torch.nn.Linear(hidden_dim, 1)
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        hidden = self.backbone(features)
+    def forward(
+        self,
+        state_features: torch.Tensor,
+        visual_tokens: torch.Tensor | None = None,
+        visual_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        state_hidden = self.state_proj(state_features)
+        if self.visual_dim > 0:
+            if visual_tokens is None or visual_mask is None:
+                raise ValueError("visual_tokens and visual_mask are required when visual_dim > 0.")
+            token_hidden = self.token_proj(visual_tokens)
+            query_tokens = self.query_tokens.unsqueeze(0).expand(state_features.shape[0], -1, -1)
+            attn_out, _ = self.cross_attn(
+                query_tokens,
+                token_hidden,
+                token_hidden,
+                key_padding_mask=~visual_mask.bool(),
+                need_weights=False,
+            )
+            visual_hidden = self.visual_norm(attn_out).mean(dim=1)
+            hidden = torch.cat([state_hidden, visual_hidden], dim=-1)
+        else:
+            hidden = state_hidden
+        hidden = self.fusion(hidden)
         return self.value_head(hidden).squeeze(-1)
 
 
@@ -38,6 +108,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, type=Path, help="Output torch checkpoint path.")
     parser.add_argument("--metrics", type=Path, default=None, help="Optional metrics JSON path.")
     parser.add_argument("--hidden-dim", default=128, type=int)
+    parser.add_argument(
+        "--query-count",
+        default=8,
+        type=int,
+        help="Learnable query count for token feature aggregation.",
+    )
+    parser.add_argument("--attention-heads", default=8, type=int, help="Cross-attention heads for token aggregation.")
     parser.add_argument("--batch-size", default=4096, type=int)
     parser.add_argument("--epochs", default=20, type=int)
     parser.add_argument("--lr", default=1e-3, type=float)
@@ -54,7 +131,7 @@ def parse_args() -> argparse.Namespace:
         "--features-dir",
         default=None,
         type=Path,
-        help="Optional directory of pre-extracted baseline pi0.5 features.",
+        help="Optional directory of pre-extracted baseline pi0.5 token features.",
     )
     parser.add_argument(
         "--feature-key",
@@ -133,11 +210,34 @@ def build_state_features(frame: pd.DataFrame) -> np.ndarray:
 
 
 def _feature_path(features_dir: Path, source_name: str, episode_index: int, feature_key: str) -> Path:
+    return features_dir / source_name / f"episode_{episode_index:06d}_{feature_key}.npz"
+
+
+def _legacy_feature_path(features_dir: Path, source_name: str, episode_index: int, feature_key: str) -> Path:
     return features_dir / source_name / f"episode_{episode_index:06d}_{feature_key}.npy"
 
 
+def _load_feature_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    loaded = np.load(path)
+    if isinstance(loaded, np.lib.npyio.NpzFile):
+        with loaded:
+            features = np.asarray(loaded["features"], dtype=np.float32)
+            mask = np.asarray(loaded["mask"], dtype=bool)
+        if features.ndim != 3 or mask.ndim != 2:
+            raise RuntimeError(f"Expected token features [frames, tokens, dim] and mask [frames, tokens] in {path}.")
+        if features.shape[:2] != mask.shape:
+            raise RuntimeError(f"Feature/mask shape mismatch in {path}: features={features.shape}, mask={mask.shape}.")
+        return features, mask
+
+    features = np.asarray(loaded, dtype=np.float32)
+    if features.ndim != 2:
+        raise RuntimeError(f"Expected legacy pooled features [frames, dim] in {path}, got {features.shape}.")
+    mask = np.ones((features.shape[0], 1), dtype=bool)
+    return features[:, None, :], mask
+
+
 def _load_visual_feature(
-    cache: dict[tuple[str, int], np.ndarray | None],
+    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None],
     *,
     features_dir: Path,
     source_name: str,
@@ -145,44 +245,57 @@ def _load_visual_feature(
     frame_index: int,
     feature_key: str,
     allow_missing: bool,
-    fallback_dim: int | None,
-) -> np.ndarray:
+    fallback_shape: tuple[int, int] | None,
+) -> tuple[np.ndarray, np.ndarray]:
     cache_key = (source_name, episode_index)
     if cache_key not in cache:
         path = _feature_path(features_dir, source_name, episode_index, feature_key)
         if path.exists():
-            cache[cache_key] = np.load(path)
-        elif allow_missing:
-            cache[cache_key] = None
+            cache[cache_key] = _load_feature_file(path)
         else:
-            raise FileNotFoundError(f"Missing pre-extracted feature file: {path}")
+            legacy_path = _legacy_feature_path(features_dir, source_name, episode_index, feature_key)
+            if legacy_path.exists():
+                cache[cache_key] = _load_feature_file(legacy_path)
+            elif allow_missing:
+                cache[cache_key] = None
+            else:
+                raise FileNotFoundError(f"Missing pre-extracted feature file: {path}")
 
-    array = cache[cache_key]
-    if array is None:
-        if fallback_dim is None:
-            raise RuntimeError("fallback_dim must be known when allow_missing_features is enabled.")
-        return np.zeros(fallback_dim, dtype=np.float32)
+    episode_features = cache[cache_key]
+    if episode_features is None:
+        if fallback_shape is None:
+            raise RuntimeError("fallback_shape must be known when allow_missing_features is enabled.")
+        token_count, feature_dim = fallback_shape
+        return np.zeros((token_count, feature_dim), dtype=np.float32), np.ones(token_count, dtype=bool)
+
+    array, mask_array = episode_features
     if frame_index >= len(array):
         if allow_missing:
-            return np.zeros(array.shape[-1], dtype=np.float32)
+            return np.zeros(array.shape[1:], dtype=np.float32), np.ones(array.shape[1], dtype=bool)
         raise IndexError(
             f"Feature file for source={source_name}, episode={episode_index} has {len(array)} rows; "
             f"cannot read frame_index={frame_index}."
         )
-    feature = np.asarray(array[frame_index], dtype=np.float32).reshape(-1)
-    if not np.all(np.isfinite(feature)):
+    feature = np.asarray(array[frame_index], dtype=np.float32)
+    mask = np.asarray(mask_array[frame_index], dtype=bool)
+    if feature.ndim != 2 or mask.ndim != 1 or feature.shape[0] != mask.shape[0]:
+        raise RuntimeError(
+            f"Invalid token feature shape for source={source_name}, episode={episode_index}, frame={frame_index}: "
+            f"feature={feature.shape}, mask={mask.shape}."
+        )
+    if not np.all(np.isfinite(feature)) or not np.any(mask):
         if allow_missing:
-            return np.zeros(array.shape[-1], dtype=np.float32)
+            return np.zeros(array.shape[1:], dtype=np.float32), np.ones(array.shape[1], dtype=bool)
         raise RuntimeError(
             f"Feature for source={source_name}, episode={episode_index}, frame={frame_index} is missing or non-finite."
         )
-    return feature
+    return feature, mask
 
 
-def _infer_visual_dim(frame: pd.DataFrame, features_dir: Path, feature_key: str) -> int:
-    cache: dict[tuple[str, int], np.ndarray | None] = {}
+def _infer_visual_shape(frame: pd.DataFrame, features_dir: Path, feature_key: str) -> tuple[int, int]:
+    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
     for row in frame.itertuples(index=False):
-        feature = _load_visual_feature(
+        feature, _mask = _load_visual_feature(
             cache,
             features_dir=features_dir,
             source_name=str(row.source_name),
@@ -190,10 +303,10 @@ def _infer_visual_dim(frame: pd.DataFrame, features_dir: Path, feature_key: str)
             frame_index=int(row.frame_index),
             feature_key=feature_key,
             allow_missing=False,
-            fallback_dim=None,
+            fallback_shape=None,
         )
-        return int(feature.shape[-1])
-    raise RuntimeError("Cannot infer visual feature dimension from an empty targets frame.")
+        return int(feature.shape[0]), int(feature.shape[-1])
+    raise RuntimeError("Cannot infer visual feature shape from an empty targets frame.")
 
 
 def build_visual_features(
@@ -202,27 +315,31 @@ def build_visual_features(
     features_dir: Path | None,
     feature_key: str,
     allow_missing: bool,
-) -> np.ndarray:
+) -> VisualFeatureBatch:
     if features_dir is None:
-        return np.zeros((len(frame), 0), dtype=np.float32)
-
-    fallback_dim = _infer_visual_dim(frame, features_dir, feature_key)
-    cache: dict[tuple[str, int], np.ndarray | None] = {}
-    features = []
-    for row in frame.itertuples(index=False):
-        features.append(
-            _load_visual_feature(
-                cache,
-                features_dir=features_dir,
-                source_name=str(row.source_name),
-                episode_index=int(row.episode_index),
-                frame_index=int(row.frame_index),
-                feature_key=feature_key,
-                allow_missing=allow_missing,
-                fallback_dim=fallback_dim,
-            )
+        return VisualFeatureBatch(
+            tokens=np.zeros((len(frame), 0, 0), dtype=np.float32),
+            mask=np.zeros((len(frame), 0), dtype=bool),
         )
-    return np.stack(features).astype(np.float32)
+
+    fallback_shape = _infer_visual_shape(frame, features_dir, feature_key)
+    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
+    features = []
+    masks = []
+    for row in frame.itertuples(index=False):
+        feature, mask = _load_visual_feature(
+            cache,
+            features_dir=features_dir,
+            source_name=str(row.source_name),
+            episode_index=int(row.episode_index),
+            frame_index=int(row.frame_index),
+            feature_key=feature_key,
+            allow_missing=allow_missing,
+            fallback_shape=fallback_shape,
+        )
+        features.append(feature)
+        masks.append(mask)
+    return VisualFeatureBatch(tokens=np.stack(features).astype(np.float32), mask=np.stack(masks).astype(bool))
 
 
 def split_by_episode(frame: pd.DataFrame, *, val_fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -245,14 +362,18 @@ def _batch_indices(indices: np.ndarray, *, batch_size: int, rng: np.random.Gener
 
 
 def _evaluate(
-    model: ValueNet,
-    features: torch.Tensor,
+    model: TokenValueNet,
+    state_features: torch.Tensor,
+    visual_tokens: torch.Tensor | None,
+    visual_mask: torch.Tensor | None,
     value_targets: torch.Tensor,
     indices: np.ndarray,
 ) -> dict[str, float]:
     model.eval()
     with torch.no_grad():
-        value_pred = model(features[indices])
+        batch_visual_tokens = visual_tokens[indices] if visual_tokens is not None else None
+        batch_visual_mask = visual_mask[indices] if visual_mask is not None else None
+        value_pred = model(state_features[indices], batch_visual_tokens, batch_visual_mask)
         value_loss = torch.mean(torch.square(value_pred - value_targets[indices]))
     return {
         "value_mse": float(value_loss.cpu()),
@@ -329,7 +450,9 @@ def run_validation_gates(frame: pd.DataFrame) -> dict[str, Any]:
     for source, mode, success, risk_val in zip(
         frame["source_name"], frame["commander_state"], frame["episode_success"], frame["is_takeover_risk"], strict=True
     ):
-        base_weights.append(challenge_weighting.actor_base_weight(source, mode, success=success, takeover_risk=risk_val))
+        base_weights.append(
+            challenge_weighting.actor_base_weight(source, mode, success=success, takeover_risk=risk_val)
+        )
     base_weights = np.asarray(base_weights, dtype=np.float32)
 
     rho = 0.25
@@ -396,39 +519,52 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     rng = np.random.default_rng(args.seed)
     frame = pd.read_parquet(args.targets).sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
     state_features_np = build_state_features(frame)
-    visual_features_np = build_visual_features(
+    visual_feature_batch = build_visual_features(
         frame,
         features_dir=args.features_dir,
         feature_key=args.feature_key,
         allow_missing=args.allow_missing_features,
     )
-    features_np = np.concatenate([state_features_np, visual_features_np], axis=1).astype(np.float32)
+    visual_tokens_np = visual_feature_batch.tokens
+    visual_mask_np = visual_feature_batch.mask
+    visual_token_count = int(visual_tokens_np.shape[1])
+    visual_feature_dim = int(visual_tokens_np.shape[2]) if visual_tokens_np.ndim == 3 else 0
     value_targets_np = frame["value_target"].to_numpy(dtype=np.float32)
     train_mask, val_mask = split_by_episode(frame, val_fraction=args.val_fraction, seed=args.seed)
     train_indices = np.nonzero(train_mask)[0]
     val_indices = np.nonzero(val_mask)[0]
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    features = torch.as_tensor(features_np, device=device)
+    state_features = torch.as_tensor(state_features_np, device=device)
+    visual_tokens = torch.as_tensor(visual_tokens_np, device=device) if visual_feature_dim > 0 else None
+    visual_mask = torch.as_tensor(visual_mask_np, device=device) if visual_feature_dim > 0 else None
     value_targets = torch.as_tensor(value_targets_np, device=device)
-    model = ValueNet(input_dim=features_np.shape[1], hidden_dim=args.hidden_dim).to(device)
+    model = TokenValueNet(
+        state_dim=state_features_np.shape[1],
+        visual_dim=visual_feature_dim,
+        hidden_dim=args.hidden_dim,
+        query_count=args.query_count,
+        attention_heads=args.attention_heads,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for _epoch in range(args.epochs):
         model.train()
         for batch in _batch_indices(train_indices, batch_size=args.batch_size, rng=rng):
-            value_pred = model(features[batch])
+            batch_visual_tokens = visual_tokens[batch] if visual_tokens is not None else None
+            batch_visual_mask = visual_mask[batch] if visual_mask is not None else None
+            value_pred = model(state_features[batch], batch_visual_tokens, batch_visual_mask)
             value_loss = torch.mean(torch.square(value_pred - value_targets[batch]))
             optimizer.zero_grad(set_to_none=True)
             value_loss.backward()
             optimizer.step()
 
-    train_metrics = _evaluate(model, features, value_targets, train_indices)
-    val_metrics = _evaluate(model, features, value_targets, val_indices)
+    train_metrics = _evaluate(model, state_features, visual_tokens, visual_mask, value_targets, train_indices)
+    val_metrics = _evaluate(model, state_features, visual_tokens, visual_mask, value_targets, val_indices)
 
     model.eval()
     with torch.no_grad():
-        value_pred = model(features)
+        value_pred = model(state_features, visual_tokens, visual_mask)
         frame["value_pred"] = value_pred.detach().cpu().numpy().astype(np.float32)
 
     args.predictions.parent.mkdir(parents=True, exist_ok=True)
@@ -437,10 +573,14 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     torch.save(
         {
             "model_state": model.state_dict(),
-            "input_dim": features_np.shape[1],
+            "architecture": "token_cross_attention_value",
+            "input_dim": int(state_features_np.shape[1] + visual_token_count * visual_feature_dim),
             "state_feature_dim": state_features_np.shape[1],
-            "visual_feature_dim": visual_features_np.shape[1],
+            "visual_token_count": visual_token_count,
+            "visual_feature_dim": visual_feature_dim,
             "hidden_dim": args.hidden_dim,
+            "query_count": args.query_count,
+            "attention_heads": args.attention_heads,
             "feature_key": args.feature_key,
             "commander_modes": COMMANDER_MODES,
         },
@@ -452,9 +592,11 @@ def train(args: argparse.Namespace) -> dict[str, float]:
         "rows": int(len(frame)),
         "train_rows": int(len(train_indices)),
         "val_rows": int(len(val_indices)),
-        "input_dim": int(features_np.shape[1]),
+        "input_dim": int(state_features_np.shape[1] + visual_token_count * visual_feature_dim),
         "state_feature_dim": int(state_features_np.shape[1]),
-        "visual_feature_dim": int(visual_features_np.shape[1]),
+        "visual_token_count": visual_token_count,
+        "visual_feature_dim": visual_feature_dim,
+        "value_model_architecture": "token_cross_attention_value",
         **validation_metrics,
         **{f"train_{key}": value for key, value in train_metrics.items()},
         **{f"val_{key}": value for key, value in val_metrics.items()},

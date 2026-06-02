@@ -21,7 +21,7 @@ from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
 
 
-DEFAULT_FEATURE_KEY = "pi05_prefix"
+DEFAULT_FEATURE_KEY = "pi05_prefix_tokens"
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,12 +39,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Value-target parquet. Provides the episode/frame/source keys that need cached features.",
     )
-    parser.add_argument("--output-dir", required=True, type=Path, help="Directory to write feature .npy files.")
+    parser.add_argument("--output-dir", required=True, type=Path, help="Directory to write feature .npz files.")
     parser.add_argument("--batch-size", default=32, type=int, help="Feature extraction batch size.")
     parser.add_argument(
         "--feature-key",
         default=DEFAULT_FEATURE_KEY,
-        help="Suffix used in saved files: episode_000000_<feature-key>.npy.",
+        help="Suffix used in saved files: episode_000000_<feature-key>.npz.",
     )
     return parser.parse_args()
 
@@ -131,23 +131,17 @@ def _assert_pytree_structure_and_shapes(reference: dict[str, Any], loaded: dict[
         raise ValueError(f"Loaded pi0.5 parameters have shape mismatches: {shape_mismatches[:5]}")
 
 
-def _masked_mean(tokens: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-    weights = mask.astype(tokens.dtype)[..., None]
-    denom = jnp.maximum(jnp.sum(weights, axis=1), 1.0)
-    return jnp.sum(tokens * weights, axis=1) / denom
-
-
-def _extract_prefix_features(model, observation: _model.Observation) -> jnp.ndarray:
+def _extract_prefix_features(model, observation: _model.Observation) -> tuple[jnp.ndarray, jnp.ndarray]:
     observation = _model.preprocess_observation(None, observation, train=False)
     prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
     prefix_attn_mask = _pi0.make_attn_mask(prefix_mask, prefix_ar_mask)
     positions = jnp.cumsum(prefix_mask, axis=1) - 1
     prefix_out, _ = model.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
-    return _masked_mean(prefix_out, prefix_mask).astype(jnp.float32)
+    return prefix_out.astype(jnp.float32), prefix_mask
 
 
 def _write_feature_groups(
-    features_by_episode: dict[tuple[str, int], dict[int, np.ndarray]],
+    features_by_episode: dict[tuple[str, int], dict[int, tuple[np.ndarray, np.ndarray]]],
     output_dir: Path,
     *,
     feature_key: str,
@@ -156,27 +150,40 @@ def _write_feature_groups(
         "feature_key": feature_key,
         "episodes": 0,
         "frames": 0,
-        "feature_dim": None,
+        "feature_shape": None,
+        "token_count": None,
+        "token_dim": None,
         "files": [],
     }
     for (source_name, episode_index), frame_features in sorted(features_by_episode.items()):
         if not frame_features:
             continue
         max_frame = max(frame_features)
-        first = next(iter(frame_features.values()))
-        feature_dim = int(first.shape[-1])
-        episode_features = np.full((max_frame + 1, feature_dim), np.nan, dtype=np.float32)
-        for frame_index, feature in frame_features.items():
-            episode_features[frame_index] = feature.astype(np.float32, copy=False)
+        first_tokens, first_mask = next(iter(frame_features.values()))
+        token_count = int(first_tokens.shape[0])
+        token_dim = int(first_tokens.shape[-1])
+        episode_features = np.full((max_frame + 1, token_count, token_dim), np.nan, dtype=np.float32)
+        episode_masks = np.zeros((max_frame + 1, token_count), dtype=bool)
+        for frame_index, (tokens, mask) in frame_features.items():
+            if tokens.shape != first_tokens.shape or mask.shape != first_mask.shape:
+                raise RuntimeError(
+                    f"Inconsistent prefix feature shape in source={source_name}, episode={episode_index}: "
+                    f"expected tokens={first_tokens.shape}, mask={first_mask.shape}; "
+                    f"got tokens={tokens.shape}, mask={mask.shape}."
+                )
+            episode_features[frame_index] = tokens.astype(np.float32, copy=False)
+            episode_masks[frame_index] = mask.astype(bool, copy=False)
 
         source_dir = output_dir / source_name
         source_dir.mkdir(parents=True, exist_ok=True)
-        path = source_dir / f"episode_{episode_index:06d}_{feature_key}.npy"
-        np.save(path, episode_features)
+        path = source_dir / f"episode_{episode_index:06d}_{feature_key}.npz"
+        np.savez_compressed(path, features=episode_features, mask=episode_masks)
 
         summary["episodes"] += 1
         summary["frames"] += len(frame_features)
-        summary["feature_dim"] = feature_dim
+        summary["feature_shape"] = [token_count, token_dim]
+        summary["token_count"] = token_count
+        summary["token_dim"] = token_dim
         summary["files"].append(str(path))
     return summary
 
@@ -200,7 +207,7 @@ def extract_features_for_config(
     pending = set(target_sources)
 
     model = _load_baseline_model(config)
-    features_by_episode: dict[tuple[str, int], dict[int, np.ndarray]] = {}
+    features_by_episode: dict[tuple[str, int], dict[int, tuple[np.ndarray, np.ndarray]]] = {}
     batch_samples: list[Mapping[str, Any]] = []
     batch_keys: list[tuple[int, int, str]] = []
 
@@ -208,9 +215,11 @@ def extract_features_for_config(
         if not batch_samples:
             return
         observation = _collate_observations(batch_samples)
-        features = np.asarray(_extract_prefix_features(model, observation))
-        for (episode_index, frame_index, source_name), feature in zip(batch_keys, features, strict=True):
-            features_by_episode.setdefault((source_name, episode_index), {})[frame_index] = feature
+        features, masks = jax.device_get(_extract_prefix_features(model, observation))
+        for (episode_index, frame_index, source_name), feature, mask in zip(
+            batch_keys, np.asarray(features), np.asarray(masks), strict=True
+        ):
+            features_by_episode.setdefault((source_name, episode_index), {})[frame_index] = (feature, mask)
             pending.discard((episode_index, frame_index))
         batch_samples.clear()
         batch_keys.clear()

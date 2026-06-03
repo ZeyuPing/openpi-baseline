@@ -137,7 +137,7 @@ def _extract_prefix_features(model, observation: _model.Observation) -> tuple[jn
     prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
     prefix_attn_mask = _pi0.make_attn_mask(prefix_mask, prefix_ar_mask)
     positions = jnp.cumsum(prefix_mask, axis=1) - 1
-    prefix_out, _ = model.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+    (prefix_out, _), _ = model.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
     return prefix_out.astype(jnp.float32), prefix_mask
 
 

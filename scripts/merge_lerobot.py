@@ -243,6 +243,46 @@ def merge_repos(
                 df = pd.read_parquet(str(src_parquet_path))
                 n_rows = len(df)
 
+                # Ensure the parquet schema strictly matches the target dataset features
+                target_features = meta_target.info.get("features", {})
+                
+                # 1. Drop extra columns not present in target features (excluding standard index columns)
+                standard_cols = {"index", "episode_index", "frame_index", "timestamp"}
+                allowed_cols = set(target_features.keys()).union(standard_cols)
+                df = df[[c for c in df.columns if c in allowed_cols]]
+
+                # 2. Add and fill any missing columns expected by target features
+                for col, feat_info in target_features.items():
+                    if col not in df.columns:
+                        if feat_info.get("dtype") == "video":
+                            # Videos are stored separately, not in the parquet
+                            continue
+                        
+                        shape = feat_info.get("shape", [])
+                        dtype_str = feat_info.get("dtype", "float32")
+                        
+                        if dtype_str.startswith("int"):
+                            fill_val = 0
+                            pd_dtype = np.int64
+                        elif dtype_str.startswith("float"):
+                            fill_val = np.nan
+                            pd_dtype = np.float32
+                        elif dtype_str == "string":
+                            fill_val = ""
+                            pd_dtype = object
+                        elif dtype_str == "bool":
+                            fill_val = False
+                            pd_dtype = bool
+                        else:
+                            fill_val = np.nan
+                            pd_dtype = np.float32
+
+                        if len(shape) > 0:
+                            list_val = [fill_val] * int(np.prod(shape))
+                            df[col] = [list_val] * n_rows
+                        else:
+                            df[col] = pd.Series([fill_val] * n_rows, dtype=pd_dtype)
+
                 # helper: if column stores per-cell list/array (e.g. [123]) keep that format
                 def make_episode_index_col(series, scalar_val):
                     if series.dtype == object and n_rows > 0 and isinstance(series.iloc[0], (list, tuple, np.ndarray)):

@@ -8,6 +8,11 @@ export CHALLENGE_ROOT="/root/autodl-tmp/challenge"
 
 # Disable host memory registration to avoid CUDA illegal memory access errors with PyTorch DataLoader
 # Removed invalid XLA flag to fix parsing error
+unset XLA_FLAGS
+
+# Disable NCCL P2P and IB to prevent CUDA illegal memory access errors during multi-GPU communication on AutoDL
+export NCCL_P2P_DISABLE=1
+export NCCL_IB_DISABLE=1
 
 export LD_LIBRARY_PATH=/root/miniconda3/lib:$LD_LIBRARY_PATH
 

@@ -101,13 +101,16 @@ def _collate_observations(samples: Sequence[Mapping[str, Any]]) -> _model.Observ
 
 
 def _load_baseline_model(config: _config.TrainConfig):
+    print("[*] Creating baseline model structure...")
     rng = jax.random.key(config.seed)
     model = config.model.create(rng)
     graphdef, state = nnx.split(model)
     reference = state.to_pure_dict()
+    print("[*] Loading checkpoint weights (this may take a minute)...")
     loaded = config.weight_loader.load(reference)
     _assert_pytree_structure_and_shapes(reference, loaded)
     state.replace_by_pure_dict(loaded)
+    print("[*] Merging model weights...")
     model = nnx.merge(graphdef, state)
     model.eval()
     return model
@@ -200,23 +203,35 @@ def extract_features_for_config(
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")
 
+    print(f"[*] Initializing feature extraction for config: {config_name}")
     config = _config.get_config(config_name)
     data_config = config.data.create(config.assets_dirs, config.model)
+    
+    print("[*] Loading LeRobot dataset...")
     raw_dataset = _data_loader.create_torch_dataset(data_config, config.model.action_horizon, config.model)
     transform = _make_data_transform(data_config)
     target_sources = _target_source_lookup(targets)
     pending = set(target_sources)
 
+    print("[*] Loading baseline VLA model weights...")
     model = _load_baseline_model(config)
     features_by_episode: dict[tuple[str, int], dict[int, tuple[np.ndarray, np.ndarray]]] = {}
     batch_samples: list[Mapping[str, Any]] = []
     batch_keys: list[tuple[int, int, str]] = []
 
+    is_compiled = False
+
     def flush() -> None:
+        nonlocal is_compiled
         if not batch_samples:
             return
+        if not is_compiled:
+            print("\n[*] Performing JAX JIT compilation on the GPU (first batch compilation takes 2-5 minutes)...")
         observation = _collate_observations(batch_samples)
         features, masks = jax.device_get(_extract_prefix_features(model, observation))
+        if not is_compiled:
+            print("[*] JAX compilation completed successfully. Starting extraction loop...")
+            is_compiled = True
         for (episode_index, frame_index, source_name), feature, mask in zip(
             batch_keys, np.asarray(features), np.asarray(masks), strict=True
         ):
@@ -225,7 +240,9 @@ def extract_features_for_config(
         batch_samples.clear()
         batch_keys.clear()
 
-    for index in range(len(raw_dataset)):
+    print("[*] Starting extraction loop...")
+    import tqdm
+    for index in tqdm.tqdm(range(len(raw_dataset)), desc="Extracting features"):
         raw_sample = raw_dataset[index]
         episode_index = _as_int_scalar(raw_sample["episode_index"])
         frame_index = _as_int_scalar(raw_sample["frame_index"])
@@ -245,6 +262,7 @@ def extract_features_for_config(
             f"First missing keys: {sample}"
         )
 
+    print(f"\n[*] All features extracted. Writing features to {output_dir}...")
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = _write_feature_groups(features_by_episode, output_dir, feature_key=feature_key)
     summary.update(
@@ -255,6 +273,7 @@ def extract_features_for_config(
         }
     )
     (output_dir / f"{feature_key}_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"[+] Extraction complete! Features saved in: {output_dir}")
     return summary
 
 

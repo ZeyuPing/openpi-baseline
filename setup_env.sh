@@ -7,7 +7,7 @@ export DATASET_ROOT=$HF_LEROBOT_HOME
 export CHALLENGE_ROOT="/root/autodl-tmp/challenge"
 
 # Disable host memory registration to avoid CUDA illegal memory access errors with PyTorch DataLoader
-export XLA_FLAGS="--xla_gpu_enable_host_mem_registration=false"
+# Removed invalid XLA flag to fix parsing error
 
 export LD_LIBRARY_PATH=/root/miniconda3/lib:$LD_LIBRARY_PATH
 

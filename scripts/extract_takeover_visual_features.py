@@ -77,6 +77,19 @@ def _target_source_lookup(targets_path: Path) -> dict[tuple[int, int], str]:
     return lookup
 
 
+def _find_hf_dataset(dataset: Any) -> Any | None:
+    """Find the underlying Hugging Face table without changing dataset indexing semantics."""
+    current = dataset
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        hf_dataset = getattr(current, "hf_dataset", None)
+        if hf_dataset is not None:
+            return hf_dataset
+        current = getattr(current, "_dataset", None)
+    return None
+
+
 def _make_data_transform(data_config: _config.DataConfig):
     norm_stats = data_config.norm_stats
     if data_config.repo_id != "fake" and norm_stats is None:
@@ -240,9 +253,38 @@ def extract_features_for_config(
         batch_samples.clear()
         batch_keys.clear()
 
+    # Try to pre-filter indices to avoid loading and decoding unneeded frames.
+    try:
+        print("[*] Filtering dataset indices to match target frames...")
+        hf_dataset = _find_hf_dataset(raw_dataset)
+        if hf_dataset is not None:
+            episodes = hf_dataset["episode_index"]
+            frames = hf_dataset["frame_index"]
+            target_keys = set(target_sources.keys())
+            matching_indices = [
+                idx
+                for idx, (ep, fr) in enumerate(zip(episodes, frames, strict=True))
+                if (int(ep), int(fr)) in target_keys
+            ]
+            print(
+                f"[*] Found {len(matching_indices)} target frames to extract out of "
+                f"{len(raw_dataset)} total dataset frames."
+            )
+            if len(matching_indices) == len(raw_dataset):
+                print(
+                    "[*] Prefilter matched every dataset frame; extraction speed will still be dominated "
+                    "by VLA forward passes."
+                )
+        else:
+            print("[*] Warning: hf_dataset not found. Falling back to scanning all frames (this will be slow).")
+            matching_indices = list(range(len(raw_dataset)))
+    except Exception as e:
+        print(f"[*] Warning: Failed to pre-filter indices ({e}). Falling back to scanning all frames.")
+        matching_indices = list(range(len(raw_dataset)))
+
     print("[*] Starting extraction loop...")
     import tqdm
-    for index in tqdm.tqdm(range(len(raw_dataset)), desc="Extracting features"):
+    for index in tqdm.tqdm(matching_indices, desc="Extracting features"):
         raw_sample = raw_dataset[index]
         episode_index = _as_int_scalar(raw_sample["episode_index"])
         frame_index = _as_int_scalar(raw_sample["frame_index"])

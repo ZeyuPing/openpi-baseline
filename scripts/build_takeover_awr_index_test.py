@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from scripts import build_takeover_awr_index
+from scripts import build_takeover_feature_requests
 from scripts import build_takeover_value_targets
 
 
@@ -87,6 +88,73 @@ def test_awr_index_excludes_takeover_risk_and_failure_by_default(tmp_path):
     assert frame.loc[frame["frame_index"] == 2, "static_weight"].item() == 2.0
 
 
+def test_awr_lookup_falls_back_to_value_target_for_sparse_predictions(tmp_path):
+    _write_episode(tmp_path, "success-and-hil-data", 0, ["inference"] * 4)
+    target_rows = build_takeover_value_targets.build_rows(
+        tmp_path,
+        risk_window_frames=1,
+        step_penalty=-1.0,
+        failure_terminal_penalty=-50.0,
+        takeover_risk_penalty=-2.0,
+        teleop_bonus=0.0,
+    )
+    targets_path = tmp_path / "targets.parquet"
+    build_takeover_value_targets.write_targets(target_rows, targets_path)
+    predictions = pd.read_parquet(targets_path)
+    predictions["value_pred"] = np.nan
+    predictions.loc[predictions["frame_index"] == 0, "value_pred"] = 0.25
+
+    lookup = build_takeover_awr_index.ValueLookup(
+        predictions,
+        value_column=None,
+        reward_column="reward_target",
+    )
+    rows = build_takeover_awr_index.build_rows(
+        tmp_path,
+        lookup=lookup,
+        action_horizon=1,
+        advantage_horizon=1,
+        max_action_jump=0.2,
+        failure_actor_weight=0.0,
+    )
+
+    frame = pd.DataFrame(rows).sort_values("frame_index")
+    assert set(frame["frame_index"]) == {0, 1, 2, 3}
+    assert frame.loc[frame["frame_index"] == 0, "value"].item() == 0.25
+    fallback_value = predictions.loc[predictions["frame_index"] == 1, "value_target"].item()
+    assert frame.loc[frame["frame_index"] == 1, "value"].item() == fallback_value
+
+
+def test_feature_requests_can_subsample_full_value_targets(tmp_path):
+    _write_episode(tmp_path, "success-and-hil-data", 0, ["inference"] * 12)
+    target_rows = build_takeover_value_targets.build_rows(
+        tmp_path,
+        risk_window_frames=1,
+        step_penalty=-1.0,
+        failure_terminal_penalty=-50.0,
+        takeover_risk_penalty=-2.0,
+        teleop_bonus=0.0,
+    )
+    targets_path = tmp_path / "targets.parquet"
+    build_takeover_value_targets.write_targets(target_rows, targets_path)
+
+    request_frame, summary = build_takeover_feature_requests.build_feature_requests(
+        task_root=tmp_path,
+        value_targets=targets_path,
+        action_horizon=1,
+        advantage_horizon=2,
+        max_action_jump=0.2,
+        failure_actor_weight=0.0,
+        actor_stride=5,
+        critic_stride=6,
+    )
+
+    assert len(request_frame) < len(pd.read_parquet(targets_path))
+    assert set(request_frame["frame_index"]) == {0, 2, 5, 6, 7, 10, 11}
+    assert summary["full_target_rows"] == 12
+    assert summary["rows"] == 7
+
+
 def test_train_takeover_value_model(tmp_path):
     from scripts import train_takeover_value_model
     import argparse
@@ -111,6 +179,7 @@ def test_train_takeover_value_model(tmp_path):
 
     args = argparse.Namespace(
         targets=targets_path,
+        prediction_targets=None,
         predictions=predictions_path,
         checkpoint=checkpoint_path,
         metrics=None,
@@ -168,6 +237,7 @@ def test_train_takeover_value_model_uses_preextracted_features(tmp_path):
 
     args = argparse.Namespace(
         targets=targets_path,
+        prediction_targets=None,
         predictions=tmp_path / "predictions_with_features.parquet",
         checkpoint=tmp_path / "checkpoint_with_features.pt",
         metrics=None,
@@ -229,6 +299,7 @@ def test_train_takeover_value_model_uses_token_features(tmp_path):
 
     args = argparse.Namespace(
         targets=targets_path,
+        prediction_targets=None,
         predictions=tmp_path / "predictions_with_token_features.parquet",
         checkpoint=tmp_path / "checkpoint_with_token_features.pt",
         metrics=None,
@@ -257,6 +328,84 @@ def test_train_takeover_value_model_uses_token_features(tmp_path):
     assert args.checkpoint.exists()
 
 
+def test_train_takeover_value_model_merges_sparse_predictions_into_full_targets(tmp_path):
+    from scripts import train_takeover_value_model
+    import argparse
+
+    _write_episode(tmp_path, "success-and-hil-data", 0, ["inference"] * 6)
+    _write_episode(tmp_path, "failure-data", 1, ["inference"] * 4)
+
+    target_rows = build_takeover_value_targets.build_rows(
+        tmp_path,
+        risk_window_frames=1,
+        step_penalty=-1.0,
+        failure_terminal_penalty=-50.0,
+        takeover_risk_penalty=-2.0,
+        teleop_bonus=0.0,
+    )
+    targets_path = tmp_path / "targets.parquet"
+    build_takeover_value_targets.write_targets(target_rows, targets_path)
+    targets = pd.read_parquet(targets_path)
+    request_frame = targets[
+        ((targets["episode_index"] == 0) & targets["frame_index"].isin([0, 3, 5]))
+        | ((targets["episode_index"] == 1) & targets["frame_index"].isin([0, 2]))
+    ].copy()
+    request_path = tmp_path / "feature_requests.parquet"
+    request_frame.to_parquet(request_path, index=False)
+
+    features_dir = tmp_path / "features"
+    (features_dir / "success-and-hil-data").mkdir(parents=True)
+    np.savez_compressed(
+        features_dir / "success-and-hil-data" / "episode_000000_pi05_prefix_tokens.npz",
+        frame_index=np.asarray([0, 3, 5], dtype=np.int64),
+        features=np.ones((3, 5, 3), dtype=np.float32),
+        mask=np.ones((3, 5), dtype=bool),
+    )
+    (features_dir / "failure-data").mkdir(parents=True)
+    np.savez_compressed(
+        features_dir / "failure-data" / "episode_000001_pi05_prefix_tokens.npz",
+        frame_index=np.asarray([0, 2], dtype=np.int64),
+        features=np.zeros((2, 5, 3), dtype=np.float32),
+        mask=np.ones((2, 5), dtype=bool),
+    )
+
+    args = argparse.Namespace(
+        targets=request_path,
+        prediction_targets=targets_path,
+        predictions=tmp_path / "sparse_predictions.parquet",
+        checkpoint=tmp_path / "sparse_checkpoint.pt",
+        metrics=None,
+        hidden_dim=8,
+        query_count=2,
+        attention_heads=2,
+        batch_size=2,
+        epochs=1,
+        lr=1e-3,
+        weight_decay=1e-4,
+        val_fraction=0.5,
+        seed=42,
+        device="cpu",
+        fail_on_validation=False,
+        features_dir=features_dir,
+        feature_key="pi05_prefix_tokens",
+        allow_missing_features=False,
+    )
+
+    metrics = train_takeover_value_model.train(args)
+    predictions = pd.read_parquet(args.predictions).sort_values("frame_index")
+
+    assert metrics["rows"] == 5
+    assert metrics["prediction_rows"] == 10
+    assert metrics["prediction_rows_with_value_pred"] == 5
+    assert predictions["reward_target"].notna().all()
+    predicted_mask = (
+        ((predictions["episode_index"] == 0) & predictions["frame_index"].isin([0, 3, 5]))
+        | ((predictions["episode_index"] == 1) & predictions["frame_index"].isin([0, 2]))
+    )
+    assert predictions.loc[predicted_mask, "value_pred"].notna().all()
+    assert predictions.loc[~predicted_mask, "value_pred"].isna().all()
+
+
 def test_train_takeover_value_model_rejects_missing_preextracted_features(tmp_path):
     from scripts import train_takeover_value_model
     import argparse
@@ -276,6 +425,7 @@ def test_train_takeover_value_model_rejects_missing_preextracted_features(tmp_pa
 
     args = argparse.Namespace(
         targets=targets_path,
+        prediction_targets=None,
         predictions=tmp_path / "predictions.parquet",
         checkpoint=tmp_path / "checkpoint.pt",
         metrics=None,

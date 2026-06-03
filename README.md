@@ -112,20 +112,28 @@ uv run python scripts/build_challenge_index.py \
 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-For takeover-aware AWR, generate value targets, extract baseline-aligned pi0.5 prefix token features, train the value model, build the AWR index, then run weighted training:
+For takeover-aware AWR, generate value targets, build a smaller feature-request parquet, extract baseline-aligned pi0.5 prefix token features, train the value model, build the AWR index, then run weighted training:
 
 ```bash
 uv run python scripts/build_takeover_value_targets.py \
   --task-root "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
   --output "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet"
 
+uv run python scripts/build_takeover_feature_requests.py \
+  --task-root "$CHALLENGE_ROOT/weighted-datasets/seal-water-bottle-cap-weighted-hil" \
+  --value-targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
+  --output "$CHALLENGE_ROOT/value-feature-requests/seal-water-bottle-cap.parquet" \
+  --actor-stride 10 \
+  --critic-stride 30
+
 uv run python scripts/extract_takeover_visual_features.py \
   --config-name pi05awr_seal-water-bottle-cap_hil \
-  --targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
+  --targets "$CHALLENGE_ROOT/value-feature-requests/seal-water-bottle-cap.parquet" \
   --output-dir "$CHALLENGE_ROOT/value-features/seal-water-bottle-cap"
 
 uv run python scripts/train_takeover_value_model.py \
-  --targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
+  --targets "$CHALLENGE_ROOT/value-feature-requests/seal-water-bottle-cap.parquet" \
+  --prediction-targets "$CHALLENGE_ROOT/value-targets/seal-water-bottle-cap.parquet" \
   --features-dir "$CHALLENGE_ROOT/value-features/seal-water-bottle-cap" \
   --predictions "$CHALLENGE_ROOT/value-predictions/seal-water-bottle-cap.parquet" \
   --checkpoint "$CHALLENGE_ROOT/value-checkpoints/seal-water-bottle-cap.pt" \
@@ -140,9 +148,35 @@ uv run python scripts/build_takeover_awr_index.py \
 bash train_weighted.sh pi05awr_seal-water-bottle-cap_hil
 ```
 
-The feature extractor intentionally reuses the configured baseline data loader, transform sequence, pi0.5 model construction, and checkpoint weight loader. It does not read raw videos or load a standalone vision tower. It caches frozen pi0.5 prefix token activations plus token masks from the same image/language path used to initialize action sampling. The value model consumes those cached tokens with a small IG-RFT-style learned-query cross-attention aggregator, concatenates proprioception and task/mode metadata, and fails on missing feature files by default.
+The full value-target parquet contains all frames so AWR can still sum intermediate rewards. The feature-request parquet limits expensive VLA feature extraction to valid actor starts, their N-step next states, and a configurable critic-training subsample. The feature extractor intentionally reuses the configured baseline data loader, transform sequence, pi0.5 model construction, and checkpoint weight loader. It does not read raw videos or load a standalone vision tower. It caches frozen pi0.5 prefix token activations plus token masks from the same image/language path used to initialize action sampling. The value model consumes those cached tokens with a small IG-RFT-style learned-query cross-attention aggregator, concatenates proprioception and task/mode metadata, and fails on missing feature files by default.
 
 Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
+
+Weighted training defaults to the config's global batch size and `fsdp_devices=1`, which uses all visible GPUs for data parallelism. On a 4x96GB node this is the preferred first run because pi0.5 fine-tuning should fit without model sharding:
+
+```bash
+OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+If CUDA illegal-address errors persist, isolate whether the issue is multi-GPU communication or the model step:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+After the 4-GPU run is stable, increase throughput explicitly. This changes the global optimization batch size, so treat it as a deliberate training setting:
+
+```bash
+OPENPI_DISABLE_DONATE=1 OPENPI_GLOBAL_BATCH_SIZE=128 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+Only enable full-model FSDP if memory is insufficient:
+
+```bash
+OPENPI_AUTO_FSDP=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+First-batch camera image logging is disabled by default because it forces a sharded JAX image batch back to host memory before training. Set `OPENPI_LOG_CAMERA_VIEWS=1` only when debugging camera preprocessing.
 
 ---
 

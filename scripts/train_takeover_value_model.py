@@ -22,6 +22,13 @@ class VisualFeatureBatch:
     mask: np.ndarray
 
 
+@dataclasses.dataclass(frozen=True)
+class EpisodeFeatureFile:
+    features: np.ndarray
+    mask: np.ndarray
+    frame_to_row: dict[int, int] | None = None
+
+
 class TokenValueNet(torch.nn.Module):
     def __init__(
         self,
@@ -103,7 +110,24 @@ class TokenValueNet(torch.nn.Module):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a takeover-aware value model.")
-    parser.add_argument("--targets", required=True, type=Path, help="Parquet from build_takeover_value_targets.py.")
+    parser.add_argument(
+        "--targets",
+        required=True,
+        type=Path,
+        help=(
+            "Parquet rows to train/predict with cached visual features. This can be the full value-target parquet or a "
+            "smaller feature-request parquet from build_takeover_feature_requests.py."
+        ),
+    )
+    parser.add_argument(
+        "--prediction-targets",
+        default=None,
+        type=Path,
+        help=(
+            "Optional full value-target parquet to preserve in the output. When set, value_pred is merged into this "
+            "full frame by source/episode/frame and remains NaN for rows that were not feature-extracted."
+        ),
+    )
     parser.add_argument("--predictions", required=True, type=Path, help="Output parquet with value_pred.")
     parser.add_argument("--checkpoint", required=True, type=Path, help="Output torch checkpoint path.")
     parser.add_argument("--metrics", type=Path, default=None, help="Optional metrics JSON path.")
@@ -144,6 +168,16 @@ def parse_args() -> argparse.Namespace:
         help="Debug-only: replace missing cached features with zeros instead of failing.",
     )
     return parser.parse_args()
+
+
+def _row_key(frame: pd.DataFrame) -> pd.Series:
+    return (
+        frame["source_name"].astype(str)
+        + "\0"
+        + frame["episode_index"].astype(str)
+        + "\0"
+        + frame["frame_index"].astype(str)
+    )
 
 
 def _state_matrix(frame: pd.DataFrame) -> np.ndarray:
@@ -217,27 +251,39 @@ def _legacy_feature_path(features_dir: Path, source_name: str, episode_index: in
     return features_dir / source_name / f"episode_{episode_index:06d}_{feature_key}.npy"
 
 
-def _load_feature_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
+def _load_feature_file(path: Path) -> EpisodeFeatureFile:
     loaded = np.load(path)
     if isinstance(loaded, np.lib.npyio.NpzFile):
         with loaded:
             features = np.asarray(loaded["features"], dtype=np.float32)
             mask = np.asarray(loaded["mask"], dtype=bool)
+            frame_indices = np.asarray(loaded["frame_index"], dtype=np.int64) if "frame_index" in loaded else None
         if features.ndim != 3 or mask.ndim != 2:
             raise RuntimeError(f"Expected token features [frames, tokens, dim] and mask [frames, tokens] in {path}.")
         if features.shape[:2] != mask.shape:
             raise RuntimeError(f"Feature/mask shape mismatch in {path}: features={features.shape}, mask={mask.shape}.")
-        return features, mask
+        if frame_indices is not None:
+            if frame_indices.ndim != 1 or len(frame_indices) != len(features):
+                raise RuntimeError(
+                    f"Sparse feature frame_index must have one row per feature row in {path}: "
+                    f"frame_index={frame_indices.shape}, features={features.shape}."
+                )
+            return EpisodeFeatureFile(
+                features=features,
+                mask=mask,
+                frame_to_row={int(frame_index): row for row, frame_index in enumerate(frame_indices)},
+            )
+        return EpisodeFeatureFile(features=features, mask=mask)
 
     features = np.asarray(loaded, dtype=np.float32)
     if features.ndim != 2:
         raise RuntimeError(f"Expected legacy pooled features [frames, dim] in {path}, got {features.shape}.")
     mask = np.ones((features.shape[0], 1), dtype=bool)
-    return features[:, None, :], mask
+    return EpisodeFeatureFile(features=features[:, None, :], mask=mask)
 
 
 def _load_visual_feature(
-    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None],
+    cache: dict[tuple[str, int], EpisodeFeatureFile | None],
     *,
     features_dir: Path,
     source_name: str,
@@ -268,16 +314,21 @@ def _load_visual_feature(
         token_count, feature_dim = fallback_shape
         return np.zeros((token_count, feature_dim), dtype=np.float32), np.ones(token_count, dtype=bool)
 
-    array, mask_array = episode_features
-    if frame_index >= len(array):
+    array = episode_features.features
+    mask_array = episode_features.mask
+    if episode_features.frame_to_row is not None:
+        feature_row = episode_features.frame_to_row.get(frame_index)
+    else:
+        feature_row = frame_index
+    if feature_row is None or feature_row >= len(array):
         if allow_missing:
             return np.zeros(array.shape[1:], dtype=np.float32), np.ones(array.shape[1], dtype=bool)
         raise IndexError(
             f"Feature file for source={source_name}, episode={episode_index} has {len(array)} rows; "
             f"cannot read frame_index={frame_index}."
         )
-    feature = np.asarray(array[frame_index], dtype=np.float32)
-    mask = np.asarray(mask_array[frame_index], dtype=bool)
+    feature = np.asarray(array[feature_row], dtype=np.float32)
+    mask = np.asarray(mask_array[feature_row], dtype=bool)
     if feature.ndim != 2 or mask.ndim != 1 or feature.shape[0] != mask.shape[0]:
         raise RuntimeError(
             f"Invalid token feature shape for source={source_name}, episode={episode_index}, frame={frame_index}: "
@@ -293,7 +344,7 @@ def _load_visual_feature(
 
 
 def _infer_visual_shape(frame: pd.DataFrame, features_dir: Path, feature_key: str) -> tuple[int, int]:
-    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
+    cache: dict[tuple[str, int], EpisodeFeatureFile | None] = {}
     for row in frame.itertuples(index=False):
         feature, _mask = _load_visual_feature(
             cache,
@@ -323,7 +374,7 @@ def build_visual_features(
         )
 
     fallback_shape = _infer_visual_shape(frame, features_dir, feature_key)
-    cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
+    cache: dict[tuple[str, int], EpisodeFeatureFile | None] = {}
     features = []
     masks = []
     for row in frame.itertuples(index=False):
@@ -518,6 +569,11 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     frame = pd.read_parquet(args.targets).sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
+    prediction_frame = (
+        pd.read_parquet(args.prediction_targets).sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
+        if args.prediction_targets is not None
+        else None
+    )
     state_features_np = build_state_features(frame)
     visual_feature_batch = build_visual_features(
         frame,
@@ -567,8 +623,15 @@ def train(args: argparse.Namespace) -> dict[str, float]:
         value_pred = model(state_features, visual_tokens, visual_mask)
         frame["value_pred"] = value_pred.detach().cpu().numpy().astype(np.float32)
 
+    output_frame = frame
+    if prediction_frame is not None:
+        output_frame = prediction_frame.copy()
+        output_frame["value_pred"] = np.nan
+        pred_lookup = dict(zip(_row_key(frame), frame["value_pred"], strict=True))
+        output_frame["value_pred"] = _row_key(output_frame).map(pred_lookup).astype(np.float32)
+
     args.predictions.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(args.predictions, index=False)
+    output_frame.to_parquet(args.predictions, index=False)
     args.checkpoint.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -590,6 +653,10 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     validation_metrics = run_validation_gates(frame)
     metrics = {
         "rows": int(len(frame)),
+        "prediction_rows": int(len(output_frame)),
+        "prediction_rows_with_value_pred": int(
+            np.isfinite(output_frame["value_pred"].to_numpy(dtype=np.float32)).sum()
+        ),
         "train_rows": int(len(train_indices)),
         "val_rows": int(len(val_indices)),
         "input_dim": int(state_features_np.shape[1] + visual_token_count * visual_feature_dim),

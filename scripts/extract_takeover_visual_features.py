@@ -175,26 +175,27 @@ def _write_feature_groups(
     for (source_name, episode_index), frame_features in sorted(features_by_episode.items()):
         if not frame_features:
             continue
-        max_frame = max(frame_features)
         first_tokens, first_mask = next(iter(frame_features.values()))
         token_count = int(first_tokens.shape[0])
         token_dim = int(first_tokens.shape[-1])
-        episode_features = np.full((max_frame + 1, token_count, token_dim), np.nan, dtype=np.float32)
-        episode_masks = np.zeros((max_frame + 1, token_count), dtype=bool)
-        for frame_index, (tokens, mask) in frame_features.items():
+        frame_indices = np.asarray(sorted(frame_features), dtype=np.int64)
+        episode_features = np.empty((len(frame_indices), token_count, token_dim), dtype=np.float32)
+        episode_masks = np.empty((len(frame_indices), token_count), dtype=bool)
+        for row_index, frame_index in enumerate(frame_indices):
+            tokens, mask = frame_features[int(frame_index)]
             if tokens.shape != first_tokens.shape or mask.shape != first_mask.shape:
                 raise RuntimeError(
                     f"Inconsistent prefix feature shape in source={source_name}, episode={episode_index}: "
                     f"expected tokens={first_tokens.shape}, mask={first_mask.shape}; "
                     f"got tokens={tokens.shape}, mask={mask.shape}."
                 )
-            episode_features[frame_index] = tokens.astype(np.float32, copy=False)
-            episode_masks[frame_index] = mask.astype(bool, copy=False)
+            episode_features[row_index] = tokens.astype(np.float32, copy=False)
+            episode_masks[row_index] = mask.astype(bool, copy=False)
 
         source_dir = output_dir / source_name
         source_dir.mkdir(parents=True, exist_ok=True)
         path = source_dir / f"episode_{episode_index:06d}_{feature_key}.npz"
-        np.savez_compressed(path, features=episode_features, mask=episode_masks)
+        np.savez_compressed(path, frame_index=frame_indices, features=episode_features, mask=episode_masks)
 
         summary["episodes"] += 1
         summary["frames"] += len(frame_features)

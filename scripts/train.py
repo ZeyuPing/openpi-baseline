@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -68,6 +69,30 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
 
     if log_code:
         wandb.run.log_code(epath.Path(__file__).parent.parent)
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _train_state_donate_argnums() -> tuple[int, ...]:
+    return () if _env_flag("OPENPI_DISABLE_DONATE", default=False) else (1,)
+
+
+def _log_first_batch_images(batch: tuple[_model.Observation, _model.Actions]) -> None:
+    if not _env_flag("OPENPI_LOG_CAMERA_VIEWS", default=False):
+        logging.info("Skipping first-batch camera image logging; set OPENPI_LOG_CAMERA_VIEWS=1 to enable.")
+        return
+
+    images = jax.device_get(batch[0].images)
+    images_to_log = [
+        wandb.Image(np.concatenate([np.asarray(img[i]) for img in images.values()], axis=1))
+        for i in range(min(5, len(next(iter(images.values())))))
+    ]
+    wandb.log({"camera_views": images_to_log}, step=0)
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
@@ -226,13 +251,7 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
-    # Log images from first batch to sanity check.
-    images = jax.device_get(batch[0].images)
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in images.values()], axis=1))
-        for i in range(min(5, len(next(iter(images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
+    _log_first_batch_images(batch)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -245,7 +264,7 @@ def main(config: _config.TrainConfig):
         functools.partial(train_step, config),
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1,),
+        donate_argnums=_train_state_donate_argnums(),
     )
 
     start_step = int(train_state.step)

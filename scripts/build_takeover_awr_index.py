@@ -138,8 +138,12 @@ def _build_episode_source_resolver(task_root: Path) -> Callable[[int], str | Non
 
 class ValueLookup:
     def __init__(self, frame: pd.DataFrame, *, value_column: str | None, reward_column: str):
+        fallback_value_column = None
         if value_column is None:
-            if "value_pred" in frame.columns:
+            if "value_pred" in frame.columns and "value_target" in frame.columns:
+                value_column = "value_pred"
+                fallback_value_column = "value_target"
+            elif "value_pred" in frame.columns:
                 value_column = "value_pred"
             elif "value_target" in frame.columns:
                 value_column = "value_target"
@@ -150,14 +154,32 @@ class ValueLookup:
         if reward_column not in frame.columns:
             raise ValueError(f"Missing reward column {reward_column!r}.")
 
-        source_names = frame["source_name"].astype(str).tolist() if "source_name" in frame.columns else [""] * len(frame)
+        if "source_name" in frame.columns:
+            source_names = frame["source_name"].astype(str).tolist()
+        else:
+            source_names = [""] * len(frame)
 
-        self.values = {
-            (str(source), int(episode_index), int(frame_index)): float(value)
+        self.values = {}
+        for source, episode_index, frame_index, value in zip(
+            source_names, frame["episode_index"], frame["frame_index"], frame[value_column], strict=True
+        ):
+            value = float(value)
+            if np.isfinite(value):
+                self.values[(str(source), int(episode_index), int(frame_index))] = value
+        if fallback_value_column is not None:
             for source, episode_index, frame_index, value in zip(
-                source_names, frame["episode_index"], frame["frame_index"], frame[value_column], strict=True
-            )
-        }
+                source_names,
+                frame["episode_index"],
+                frame["frame_index"],
+                frame[fallback_value_column],
+                strict=True,
+            ):
+                key = (str(source), int(episode_index), int(frame_index))
+                if key in self.values:
+                    continue
+                value = float(value)
+                if np.isfinite(value):
+                    self.values[key] = value
         self.rewards = {
             (str(source), int(episode_index), int(frame_index)): float(reward)
             for source, episode_index, frame_index, reward in zip(
@@ -431,7 +453,11 @@ def write_index(
 
 def main() -> None:
     args = parse_args()
-    lookup = ValueLookup.from_parquet(args.value_targets, value_column=args.value_column, reward_column=args.reward_column)
+    lookup = ValueLookup.from_parquet(
+        args.value_targets,
+        value_column=args.value_column,
+        reward_column=args.reward_column,
+    )
     rows = build_rows(
         args.task_root,
         lookup=lookup,

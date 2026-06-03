@@ -321,7 +321,11 @@ Feature extraction and value model:
 
 ```text
 feature_key: pi05_prefix_tokens
-feature format: per-episode .npz with features [frames, tokens, dim] and mask [frames, tokens]
+request file: value-feature-requests/<task>.parquet
+  includes valid actor starts, their N-step next states, and a critic-training frame subsample
+  default actor_stride: 10
+  default critic_stride: 30
+feature format: per-episode .npz with frame_index [requested_frames], features [requested_frames, tokens, dim], and mask [requested_frames, tokens]
 extract batch_size: 32
 
 value model:

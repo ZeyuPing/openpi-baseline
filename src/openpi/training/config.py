@@ -622,7 +622,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="insert-mouse-battery/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/insert-mouse-battery/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -637,7 +637,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="seal-water-bottle-cap/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/seal-water-bottle-cap/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -652,7 +652,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="tower-of-hanoi-game/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/tower-of-hanoi-game/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),

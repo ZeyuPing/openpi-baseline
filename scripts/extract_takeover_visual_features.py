@@ -96,6 +96,7 @@ def _make_data_transform(data_config: _config.DataConfig):
 
 def _collate_observations(samples: Sequence[Mapping[str, Any]]) -> _model.Observation:
     batch = jax.tree.map(lambda *xs: np.stack([np.asarray(x) for x in xs], axis=0), *samples)
+    batch = jax.tree.map(jnp.asarray, batch)
     return _model.Observation.from_dict(batch)
 
 

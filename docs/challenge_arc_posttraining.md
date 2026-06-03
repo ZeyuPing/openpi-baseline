@@ -158,7 +158,7 @@ Actor semantics by region:
 | `success-and-hil-data`, pure `inference` success | positive, base weight `0.7` | success return | by advantage |
 | `success-and-hil-data`, `teleop` | positive, base weight `2.0` | correction/success return | forced positive |
 | `success-and-hil-data`, `pre_teleop` | exclude | risky pre-takeover | negative/drop |
-| inference risk window before takeover | zero or very low actor weight | risky pre-takeover | negative |
+| inference risk window before takeover | exclude, base actor weight `0.0` | risky pre-takeover | negative |
 | `restore` / `align` | exclude | reset/drop region | drop |
 | `failure-data` ordinary frames | default zero actor weight for Stage A | failed return | negative for Stage B |
 
@@ -244,6 +244,123 @@ rho in {0.25, 0.5, 1.0}
 
 Start with cap or hanoi, not battery. Battery is already strong, so keep it close to static until
 we know the value model is useful.
+
+### Current Stage A Implementation Defaults
+
+The current codebase implements the Stage A recipe with these concrete defaults.
+
+Takeover and actor filtering:
+
+```text
+drop modes:
+  pre_teleop
+  restore
+  align
+
+takeover target modes:
+  pre_teleop
+  teleop
+
+risk_window_frames:
+  60
+
+valid actor chunk:
+  whole 50-frame action horizon must stay in one commander-state segment
+  chunk must not overlap drop modes
+  chunk must not overlap takeover-risk mask
+  max absolute per-step action jump must be <= 0.2
+  enough future frames must exist for the full action horizon
+```
+
+Actor base weights:
+
+```text
+expert-data:
+  inference or teleop-like active modes: 1.0
+
+success-and-hil-data:
+  inference: 0.7
+  teleop: 2.0
+  pre_teleop: 0.0
+  restore: 0.0
+  align: 0.0
+  inference risk window before takeover: 0.0
+
+failure-data:
+  default: 0.0
+  configurable via --failure-actor-weight in build_takeover_awr_index.py
+```
+
+Value-target reward synthesis:
+
+```text
+step_penalty: -1.0
+failure_terminal_penalty: -50.0
+takeover_risk_penalty: -2.0
+teleop_bonus: 0.0
+
+successful terminal active frame reward:
+  0.0
+
+failed terminal active frame reward:
+  -50.0
+
+takeover-risk inference frames:
+  step_penalty + takeover_risk_penalty = -3.0
+
+pre_teleop frames:
+  0.0 base drop-mode reward + takeover_risk_penalty = -2.0
+
+return normalization:
+  reward_target = reward / max(abs(return_to_go))
+  value_target = return_to_go / max(abs(return_to_go))
+  current implementation scales globally per target file
+```
+
+Feature extraction and value model:
+
+```text
+feature_key: pi05_prefix_tokens
+feature format: per-episode .npz with features [frames, tokens, dim] and mask [frames, tokens]
+extract batch_size: 32
+
+value model:
+  frozen pi0.5 prefix token features
+  learned query cross-attention aggregator
+  hidden_dim: 128
+  query_count: 8
+  attention_heads: 8
+  batch_size: 4096
+  epochs: 20
+  lr: 1e-3
+  weight_decay: 1e-4
+  val_fraction: 0.2
+  seed: 42
+  missing feature files fail by default
+```
+
+AWR index generation:
+
+```text
+action_horizon: 50
+advantage_horizon: 50
+max_action_jump: 0.2
+beta: 1.0
+awr_min: 0.25
+awr_max: 3.0
+rho default in script: 1.0
+first-run rho used in docs/README examples: 0.25
+reward_column: reward_target
+value_column: value_pred if present, otherwise value_target
+
+advantage:
+  sum reward_target over [t, t + advantage_horizon)
+  + V(s_{t + advantage_horizon})
+  - V(s_t)
+
+standardization:
+  robust median/MAD within task if task_index/task_id exists, then source_name, commander_state
+```
 
 ## 7. Stage B: `pi05ac_*` After Validation
 

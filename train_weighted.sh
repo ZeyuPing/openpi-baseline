@@ -40,11 +40,6 @@ fi
 
 # Auto-scale and optimize training configuration if not explicitly overridden
 EXTRA_ARGS=""
-if [[ ! "$*" =~ "--num-workers" ]]; then
-  # Limit dataloader worker threads to prevent shared memory race conditions and CUDA errors
-  EXTRA_ARGS="$EXTRA_ARGS --num-workers 8"
-fi
-
 if command -v nvidia-smi &> /dev/null; then
   NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
   if [ "$NUM_GPUS" -gt 1 ]; then

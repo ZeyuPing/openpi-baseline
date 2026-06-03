@@ -4,7 +4,7 @@ set -euo pipefail
 source setup_env.sh
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
-export OPENPI_DISABLE_DONATE=${OPENPI_DISABLE_DONATE:-1}
+export OPENPI_DISABLE_DONATE=${OPENPI_DISABLE_DONATE:-0}
 
 if [ $# -lt 1 ]; then
   echo "Usage: bash train_weighted.sh <config-name>"
@@ -46,10 +46,20 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')
 fi
 
-# Keep the baseline default explicit: fsdp_devices=1 gives data parallelism across all visible GPUs.
-# Set OPENPI_AUTO_FSDP=1 only when per-GPU memory is insufficient and model sharding is required.
-if [ "${OPENPI_AUTO_FSDP:-0}" = "1" ] && [ "$NUM_GPUS" -gt 1 ] && [[ ! "$*" =~ "--fsdp-devices" ]]; then
-  EXTRA_ARGS+=(--fsdp-devices "$NUM_GPUS")
+# pi0.5 full fine-tuning can exceed 96GB when fully replicated and JIT donation is disabled.
+# On 4x96GB, fsdp_devices=2 keeps two data-parallel replicas while halving model-state memory per GPU.
+if [ "$NUM_GPUS" -gt 1 ] && [[ ! "$*" =~ "--fsdp-devices" ]]; then
+  DEFAULT_FSDP_DEVICES=${OPENPI_FSDP_DEVICES:-2}
+  if [ "$DEFAULT_FSDP_DEVICES" -le 0 ]; then
+    DEFAULT_FSDP_DEVICES=1
+  fi
+  if [ "$DEFAULT_FSDP_DEVICES" -gt "$NUM_GPUS" ]; then
+    DEFAULT_FSDP_DEVICES=$NUM_GPUS
+  fi
+  if [ $((NUM_GPUS % DEFAULT_FSDP_DEVICES)) -ne 0 ]; then
+    DEFAULT_FSDP_DEVICES=$NUM_GPUS
+  fi
+  EXTRA_ARGS+=(--fsdp-devices "$DEFAULT_FSDP_DEVICES")
 fi
 
 # Changing global batch size changes the optimization run. Opt in after a stable baseline is confirmed.
@@ -60,7 +70,7 @@ fi
 if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
   echo "[*] Training settings appended: ${EXTRA_ARGS[*]}"
 else
-  echo "[*] Using config training settings; visible_gpus=$NUM_GPUS fsdp_devices=1 unless overridden."
+  echo "[*] Using config training settings; visible_gpus=$NUM_GPUS."
 fi
 echo "[*] OPENPI_DISABLE_DONATE=$OPENPI_DISABLE_DONATE"
 

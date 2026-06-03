@@ -152,28 +152,34 @@ The full value-target parquet contains all frames so AWR can still sum intermedi
 
 Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
 
-Weighted training defaults to the config's global batch size and `fsdp_devices=1`, which uses all visible GPUs for data parallelism. On a 4x96GB node this is the preferred first run because pi0.5 fine-tuning should fit without model sharding:
+Weighted training defaults to the config's global batch size and, on multi-GPU nodes, appends `--fsdp-devices 2` unless you override it. On a 4x96GB node this uses two FSDP shards and two data-parallel replicas, which avoids the observed full-replication OOM while still using all four GPUs:
+
+```bash
+bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+If CUDA illegal-address errors recur, disable JIT buffer donation for isolation. This is more memory hungry, so keep `fsdp_devices=2` or increase to 4 if needed:
 
 ```bash
 OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-If CUDA illegal-address errors persist, isolate whether the issue is multi-GPU communication or the model step:
+If memory is still tight, shard across all visible GPUs:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+OPENPI_FSDP_DEVICES=4 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+To isolate whether a failure is multi-GPU communication or the model step, run one GPU with a smaller global batch:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil --batch-size 8
 ```
 
 After the 4-GPU run is stable, increase throughput explicitly. This changes the global optimization batch size, so treat it as a deliberate training setting:
 
 ```bash
-OPENPI_DISABLE_DONATE=1 OPENPI_GLOBAL_BATCH_SIZE=128 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
-```
-
-Only enable full-model FSDP if memory is insufficient:
-
-```bash
-OPENPI_AUTO_FSDP=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+OPENPI_GLOBAL_BATCH_SIZE=64 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
 First-batch camera image logging is disabled by default because it forces a sharded JAX image batch back to host memory before training. Set `OPENPI_LOG_CAMERA_VIEWS=1` only when debugging camera preprocessing.

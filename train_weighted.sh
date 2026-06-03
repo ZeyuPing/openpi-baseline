@@ -38,4 +38,22 @@ else
   echo "Set FORCE_NORM_STATS=1 to recompute."
 fi
 
-uv run scripts/train_weighted.py "$CONFIG" --exp-name="$EXP_NAME" --overwrite 2>&1 | tee -a "$LOG_FILE"
+# Detect number of GPUs to automatically scale training if not explicitly overridden
+EXTRA_ARGS=""
+if command -v nvidia-smi &> /dev/null; then
+  NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+  if [ "$NUM_GPUS" -gt 1 ]; then
+    if [[ ! "$*" =~ "--fsdp-devices" ]]; then
+      EXTRA_ARGS="$EXTRA_ARGS --fsdp-devices $NUM_GPUS"
+    fi
+    if [[ ! "$*" =~ "--batch-size" ]]; then
+      AUTO_BATCH_SIZE=$((NUM_GPUS * 32))
+      EXTRA_ARGS="$EXTRA_ARGS --batch-size $AUTO_BATCH_SIZE"
+    fi
+    if [ ! -z "$EXTRA_ARGS" ]; then
+      echo "[*] Auto-scaling training: detected $NUM_GPUS GPUs. Appending: $EXTRA_ARGS"
+    fi
+  fi
+fi
+
+uv run scripts/train_weighted.py "$CONFIG" --exp-name="$EXP_NAME" --overwrite $EXTRA_ARGS "${@:2}" 2>&1 | tee -a "$LOG_FILE"

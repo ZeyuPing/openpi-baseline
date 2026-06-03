@@ -6,6 +6,9 @@ export WANDB_API_KEY="wandb_v1_SWsHZ78eGG8jeDDZ6OIlXHCMSB2_9dHalNsZPT3ProzSX5Fc6
 export DATASET_ROOT=$HF_LEROBOT_HOME
 export CHALLENGE_ROOT="/root/autodl-tmp/challenge"
 
+# Disable host memory registration to avoid CUDA illegal memory access errors with PyTorch DataLoader
+export XLA_FLAGS="--xla_gpu_enable_host_mem_registration=false"
+
 export LD_LIBRARY_PATH=/root/miniconda3/lib:$LD_LIBRARY_PATH
 
 echo "Environment variables set:"

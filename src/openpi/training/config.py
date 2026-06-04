@@ -613,11 +613,29 @@ class TrainConfig:
 _CONFIGS = [
     # Challenge Baseline Examples
     TrainConfig(
+    name="pi05_multitask-generalist",
+    model=pi0_config.Pi0Config(pi05=True),
+    data=DualYamDataConfig(
+        repo_id="challenge/multitask-generalist",
+        base_config=DataConfig(
+            prompt_from_task=True,
+            local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-generalist/expert-data",
+        ),
+        use_delta_joint_actions=True,
+        adapt_to_pi=True,
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+    num_train_steps=600_000,
+    batch_size=32,
+    num_workers=64,
+    save_interval=40_000,
+    ),
+    TrainConfig(
         name="pi05_insert-mouse-battery",
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="insert-mouse-battery/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/insert-mouse-battery/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -632,7 +650,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="seal-water-bottle-cap/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/seal-water-bottle-cap/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -647,7 +665,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="tower-of-hanoi-game/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/Your/path/to/Posttraining-RFM-RSS2026/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/tower-of-hanoi-game/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),

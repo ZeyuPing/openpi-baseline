@@ -5,6 +5,11 @@ source setup_env.sh
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
 export OPENPI_DISABLE_DONATE=${OPENPI_DISABLE_DONATE:-1}
+export OPENPI_ENABLE_MULTIGPU=${OPENPI_ENABLE_MULTIGPU:-0}
+
+if [ "$OPENPI_ENABLE_MULTIGPU" != "1" ] && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  export CUDA_VISIBLE_DEVICES=${OPENPI_CUDA_VISIBLE_DEVICES:-0}
+fi
 
 if [ $# -lt 1 ]; then
   echo "Usage: bash train_weighted.sh <config-name>"
@@ -42,7 +47,9 @@ fi
 
 EXTRA_ARGS=()
 NUM_GPUS=1
-if command -v nvidia-smi >/dev/null 2>&1; then
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "NoDevFiles" ]; then
+  NUM_GPUS=$(printf "%s" "$CUDA_VISIBLE_DEVICES" | awk -F, '{print NF}')
+elif command -v nvidia-smi >/dev/null 2>&1; then
   NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')
 fi
 
@@ -66,6 +73,8 @@ fi
 # Changing global batch size changes the optimization run. Opt in after a stable baseline is confirmed.
 if [ -n "${OPENPI_GLOBAL_BATCH_SIZE:-}" ] && [[ ! "$*" =~ "--batch-size" ]]; then
   EXTRA_ARGS+=(--batch-size "$OPENPI_GLOBAL_BATCH_SIZE")
+elif [ "$OPENPI_ENABLE_MULTIGPU" != "1" ] && [[ ! "$*" =~ "--batch-size" ]]; then
+  EXTRA_ARGS+=(--batch-size "${OPENPI_SINGLE_GPU_BATCH_SIZE:-4}")
 fi
 
 if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
@@ -73,6 +82,8 @@ if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
 else
   echo "[*] Using config training settings; visible_gpus=$NUM_GPUS."
 fi
+echo "[*] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"
+echo "[*] OPENPI_ENABLE_MULTIGPU=$OPENPI_ENABLE_MULTIGPU"
 echo "[*] OPENPI_DISABLE_DONATE=$OPENPI_DISABLE_DONATE"
 
 uv run scripts/train_weighted.py "$CONFIG" --exp-name="$EXP_NAME" --overwrite "${EXTRA_ARGS[@]}" "${@:2}" 2>&1 | tee -a "$LOG_FILE"

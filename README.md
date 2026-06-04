@@ -152,16 +152,22 @@ The full value-target parquet contains all frames so AWR can still sum intermedi
 
 Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
 
-Weighted training defaults to the config's global batch size and, on multi-GPU nodes, appends `--fsdp-devices <visible-gpu-count>` unless you override it. On a 4x96GB node this uses full 4-GPU FSDP. That is the most conservative first-run layout: it avoids the observed full-replication OOM and avoids the mixed 2-FSDP/2-data-parallel layout that triggered NCCL failures on this cluster image:
+Weighted training defaults to the config's global batch size, disables JIT buffer donation, and, on multi-GPU nodes, appends `--fsdp-devices <visible-gpu-count>` unless you override it. On a 4x96GB node this uses full 4-GPU FSDP. That is the most conservative first-run layout: it avoids the observed full-replication OOM, avoids the mixed 2-FSDP/2-data-parallel layout that triggered NCCL failures, and avoids the CUDA illegal-address path seen with donation enabled on this cluster image:
 
 ```bash
 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-If CUDA illegal-address errors recur, disable JIT buffer donation for isolation. This is more memory hungry, so keep full FSDP enabled:
+After a stable run, you can test JIT buffer donation for speed/memory efficiency:
 
 ```bash
-OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+OPENPI_DISABLE_DONATE=0 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+```
+
+If full-FSDP plus donation disabled is still too memory hungry, reduce the global batch:
+
+```bash
+bash train_weighted.sh pi05w_seal-water-bottle-cap_hil --batch-size 16
 ```
 
 To test the previous 2-FSDP/2-data-parallel layout after a stable run:

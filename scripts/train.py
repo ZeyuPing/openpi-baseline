@@ -150,7 +150,7 @@ def init_train_state(
     # Initialize the train state and mix in the partial params.
     train_state = jax.jit(
         init,
-        donate_argnums=(1,),  # donate the partial params buffer.
+        donate_argnums=_train_state_donate_argnums(),
         in_shardings=replicated_sharding,
         out_shardings=state_sharding,
     )(init_rng, partial_params)

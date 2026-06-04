@@ -4,7 +4,7 @@ set -euo pipefail
 source setup_env.sh
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.95}
-export OPENPI_DISABLE_DONATE=${OPENPI_DISABLE_DONATE:-0}
+export OPENPI_DISABLE_DONATE=${OPENPI_DISABLE_DONATE:-1}
 
 if [ $# -lt 1 ]; then
   echo "Usage: bash train_weighted.sh <config-name>"

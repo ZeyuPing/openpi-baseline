@@ -46,10 +46,11 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')
 fi
 
-# pi0.5 full fine-tuning can exceed 96GB when fully replicated and JIT donation is disabled.
-# On 4x96GB, fsdp_devices=2 keeps two data-parallel replicas while halving model-state memory per GPU.
+# pi0.5 full fine-tuning can exceed 96GB when fully replicated. On the challenge 4x96GB node, full visible-GPU FSDP
+# is the most conservative first-run layout: it minimizes per-GPU model-state memory and avoids mixed FSDP/data-parallel
+# sharding transitions that have triggered NCCL failures on this cluster image.
 if [ "$NUM_GPUS" -gt 1 ] && [[ ! "$*" =~ "--fsdp-devices" ]]; then
-  DEFAULT_FSDP_DEVICES=${OPENPI_FSDP_DEVICES:-2}
+  DEFAULT_FSDP_DEVICES=${OPENPI_FSDP_DEVICES:-$NUM_GPUS}
   if [ "$DEFAULT_FSDP_DEVICES" -le 0 ]; then
     DEFAULT_FSDP_DEVICES=1
   fi

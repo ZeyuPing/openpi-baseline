@@ -9,12 +9,11 @@ export CHALLENGE_ROOT="/root/autodl-tmp/challenge"
 # Removed invalid XLA flag to fix parsing error
 unset XLA_FLAGS
 
-# Keep NCCL's fast paths enabled by default. If a specific cluster image has NCCL transport issues, set these before
-# sourcing this script:
-#   export NCCL_P2P_DISABLE=1
-#   export NCCL_IB_DISABLE=1
-export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
-export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}
+# AutoDL-style single-node images can report CUDA illegal memory access inside NCCL P2P/IB collectives.
+# Keep the conservative transport defaults for weighted JAX training; override to 0 only after a stable run.
+export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-1}
+export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 
 export LD_LIBRARY_PATH="/root/miniconda3/lib:${LD_LIBRARY_PATH:-}"
 

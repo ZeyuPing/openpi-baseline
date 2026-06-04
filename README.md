@@ -152,22 +152,22 @@ The full value-target parquet contains all frames so AWR can still sum intermedi
 
 Before launching any weighted run, update the `/Your/path/to/...` placeholders in the relevant `pi05w_*` or `pi05awr_*` config, or pass equivalent CLI overrides so the config points at the merged root and matching index.
 
-Weighted training defaults to the config's global batch size and, on multi-GPU nodes, appends `--fsdp-devices 2` unless you override it. On a 4x96GB node this uses two FSDP shards and two data-parallel replicas, which avoids the observed full-replication OOM while still using all four GPUs:
+Weighted training defaults to the config's global batch size and, on multi-GPU nodes, appends `--fsdp-devices <visible-gpu-count>` unless you override it. On a 4x96GB node this uses full 4-GPU FSDP. That is the most conservative first-run layout: it avoids the observed full-replication OOM and avoids the mixed 2-FSDP/2-data-parallel layout that triggered NCCL failures on this cluster image:
 
 ```bash
 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-If CUDA illegal-address errors recur, disable JIT buffer donation for isolation. This is more memory hungry, so keep `fsdp_devices=2` or increase to 4 if needed:
+If CUDA illegal-address errors recur, disable JIT buffer donation for isolation. This is more memory hungry, so keep full FSDP enabled:
 
 ```bash
 OPENPI_DISABLE_DONATE=1 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
-If memory is still tight, shard across all visible GPUs:
+To test the previous 2-FSDP/2-data-parallel layout after a stable run:
 
 ```bash
-OPENPI_FSDP_DEVICES=4 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
+OPENPI_FSDP_DEVICES=2 bash train_weighted.sh pi05w_seal-water-bottle-cap_hil
 ```
 
 To isolate whether a failure is multi-GPU communication or the model step, run one GPU with a smaller global batch:

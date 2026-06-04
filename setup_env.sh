@@ -15,7 +15,11 @@ export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-1}
 export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 
-export LD_LIBRARY_PATH="/root/miniconda3/lib:${LD_LIBRARY_PATH:-}"
+# JAX CUDA wheels ship their own CUDA/cuDNN/NCCL libraries and prefer them via wheel-relative RPATH.
+# Do not prepend conda libraries by default; LD_LIBRARY_PATH can make JAX load mismatched CUDA libraries.
+if [ "${OPENPI_PREPEND_CONDA_LIB:-0}" = "1" ]; then
+  export LD_LIBRARY_PATH="/root/miniconda3/lib:${LD_LIBRARY_PATH:-}"
+fi
 
 echo "Environment variables set:"
 echo "OPENPI_DATA_HOME: $OPENPI_DATA_HOME"
@@ -23,6 +27,7 @@ echo "HF_LEROBOT_HOME: $HF_LEROBOT_HOME"
 echo "HF_HOME: $HF_HOME"
 echo "NCCL_P2P_DISABLE: $NCCL_P2P_DISABLE"
 echo "NCCL_IB_DISABLE: $NCCL_IB_DISABLE"
+echo "LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-<unset>}"
 if [ -n "${WANDB_API_KEY:-}" ]; then
   echo "WANDB_API_KEY: set"
 else

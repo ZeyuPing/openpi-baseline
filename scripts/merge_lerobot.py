@@ -302,8 +302,13 @@ def merge_repos(
                 tgt_vpath_rel = meta_target.video_path.format(episode_chunk=tgt_vchunk_idx, video_key=vid_key, episode_index=new_ep_idx)
                 tgt_vpath = meta_target.root / tgt_vpath_rel
                 tgt_vpath.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src_vpath), str(tgt_vpath))
-                print(f"     copied video {vid_key}: {src_vpath.name} -> {tgt_vpath_rel}")
+                try:
+                    import os
+                    os.link(str(src_vpath), str(tgt_vpath))
+                    print(f"     linked video {vid_key}: {src_vpath.name} -> {tgt_vpath_rel}")
+                except Exception:
+                    shutil.copy2(str(src_vpath), str(tgt_vpath))
+                    print(f"     copied video {vid_key}: {src_vpath.name} -> {tgt_vpath_rel}")
 
             # episode_stats retrieval (source stats may use string keys)
             ep_stats = {}

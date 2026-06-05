@@ -98,7 +98,10 @@ class RepackTransform(DataTransformFn):
 
     def __call__(self, data: DataDict) -> DataDict:
         flat_item = flatten_dict(data)
-        return jax.tree.map(lambda k: flat_item[k], self.structure)
+        repacked = jax.tree.map(lambda k: flat_item[k], self.structure)
+        if "sample_weight" in data:
+            repacked["sample_weight"] = data["sample_weight"]
+        return repacked
 
 
 @dataclasses.dataclass(frozen=True)

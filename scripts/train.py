@@ -138,24 +138,42 @@ def train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    batch: tuple[_model.Observation, _model.Actions],
+    batch: tuple[_model.Observation, _model.Actions] | tuple[_model.Observation, _model.Actions, at.Array],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
     @at.typecheck
     def loss_fn(
-        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+        model: _model.BaseModel,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        sample_weight: at.Array | None,
     ):
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return jnp.mean(chunked_loss)
+        if sample_weight is None:
+            return jnp.mean(chunked_loss)
+
+        sample_weight = jnp.asarray(sample_weight, dtype=chunked_loss.dtype)
+        if sample_weight.ndim == chunked_loss.ndim - 1:
+            per_sample_loss = jnp.mean(chunked_loss, axis=-1)
+            return jnp.sum(per_sample_loss * sample_weight) / jnp.maximum(jnp.sum(sample_weight), 1e-6)
+
+        while sample_weight.ndim < chunked_loss.ndim:
+            sample_weight = sample_weight[..., None]
+        return jnp.sum(chunked_loss * sample_weight) / jnp.maximum(jnp.sum(sample_weight), 1e-6)
 
     train_rng = jax.random.fold_in(rng, state.step)
-    observation, actions = batch
+    if len(batch) == 2:
+        observation, actions = batch
+        sample_weight = None
+    else:
+        observation, actions, sample_weight = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions, sample_weight)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -187,6 +205,7 @@ def train_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        "sample_weight_mean": jnp.asarray(1.0) if sample_weight is None else jnp.mean(sample_weight),
     }
     return new_state, info
 

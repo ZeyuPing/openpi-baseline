@@ -62,6 +62,47 @@ class AssetsConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class SampleWeightConfig:
+    """Controls source/progress weights for merged challenge datasets."""
+
+    default_weight: float = 1.0
+    expert_weight: float = 1.0
+    success_weight: float = 1.3
+    failure_weight: float = 0.35
+    hil_pre_takeover_weight: float = 0.35
+    hil_correction_weight: float = 2.0
+    hil_transition_weight: float = 0.0
+    hil_restore_weight: float = 0.0
+
+    expert_patterns: tuple[str, ...] = ("expert",)
+    success_patterns: tuple[str, ...] = ("success",)
+    success_and_hil_patterns: tuple[str, ...] = ("success-and-hil", "success_and_hil")
+    hil_patterns: tuple[str, ...] = ("hil", "human", "intervention", "correction")
+    failure_patterns: tuple[str, ...] = ("failure", "fail")
+    commander_state_key: str = "observation.commander_state"
+    hil_takeover_keys: tuple[str, ...] = (
+        "is_human_control",
+        "human_control",
+        "is_intervention",
+        "intervention",
+        "is_takeover",
+        "takeover",
+        "operator_override",
+        "human_override",
+    )
+    autonomous_modes: tuple[str, ...] = ("inference",)
+    teleop_modes: tuple[str, ...] = ("teleop",)
+    transition_modes: tuple[str, ...] = ("pre_teleop",)
+    restore_modes: tuple[str, ...] = ("restore", "align")
+
+    # Failure rollouts are useful near the beginning, but imitation should fade out before the failed tail.
+    failure_prefix_keep_fraction: float = 0.35
+    failure_tail_zero_fraction: float = 0.75
+    # If no explicit takeover flag is present, treat only the late HIL segment as correction data.
+    hil_correction_start_fraction: float = 0.5
+
+
+@dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
@@ -97,6 +138,7 @@ class DataConfig:
     # Path to the data filter file for DROID dataset
     filter_dict_path: str | None = None
     local_files_path: str | None = None
+    sample_weight_config: SampleWeightConfig | None = None
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -613,13 +655,85 @@ class TrainConfig:
 _CONFIGS = [
     # Challenge Baseline Examples
     TrainConfig(
+        name="pi05_multitask-positive",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="challenge/multitask-positive",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-positive",
+                sample_weight_config=SampleWeightConfig(
+                    expert_weight=1.0,
+                    success_weight=1.3,
+                    hil_pre_takeover_weight=0.35,
+                    hil_correction_weight=2.0,
+                    hil_transition_weight=0.0,
+                    hil_restore_weight=0.0,
+                ),
+            ),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=2_000,
+            peak_lr=2.5e-5,
+            decay_steps=600_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=600_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=40_000,
+        keep_period=40_000,
+    ),
+    TrainConfig(
+        name="pi05_multitask-weighted",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=DualYamDataConfig(
+            repo_id="challenge/multitask-weighted",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-weighted",
+                sample_weight_config=SampleWeightConfig(
+                    expert_weight=1.0,
+                    success_weight=1.3,
+                    hil_pre_takeover_weight=0.35,
+                    hil_correction_weight=2.0,
+                    hil_transition_weight=0.0,
+                    hil_restore_weight=0.0,
+                    hil_correction_start_fraction=0.5,
+                    failure_weight=0.35,
+                    failure_prefix_keep_fraction=0.35,
+                    failure_tail_zero_fraction=0.75,
+                ),
+            ),
+            use_delta_joint_actions=True,
+            adapt_to_pi=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "./checkpoints/pi05_multitask-positive/pi05_multitask-positive/599999/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1.0e-5,
+            decay_steps=200_000,
+            decay_lr=1.0e-6,
+        ),
+        num_train_steps=200_000,
+        batch_size=32,
+        num_workers=64,
+        save_interval=20_000,
+        keep_period=20_000,
+    ),
+    TrainConfig(
     name="pi05_multitask-generalist",
     model=pi0_config.Pi0Config(pi05=True),
-    data=DualYamDataConfig(
+        data=DualYamDataConfig(
         repo_id="challenge/multitask-generalist",
         base_config=DataConfig(
             prompt_from_task=True,
-            local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-generalist/expert-data",
+            local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-generalist/expert-data",
         ),
         use_delta_joint_actions=True,
         adapt_to_pi=True,
@@ -635,7 +749,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="insert-mouse-battery/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/insert-mouse-battery/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -650,7 +764,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="seal-water-bottle-cap/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/seal-water-bottle-cap/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -665,7 +779,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="tower-of-hanoi-game/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/tower-of-hanoi-game/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),

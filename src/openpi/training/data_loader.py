@@ -1,7 +1,9 @@
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
+import pathlib
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -60,6 +62,288 @@ class TransformedDataset(Dataset[T_co]):
 
     def __len__(self) -> int:
         return len(self._dataset)
+
+
+class WeightedLeRobotDataset(Dataset):
+    """Adds a scalar sample weight to LeRobot samples using merge provenance metadata."""
+
+    def __init__(self, dataset: Dataset, data_config: _config.DataConfig, dataset_root: pathlib.Path):
+        if data_config.sample_weight_config is None:
+            raise ValueError("sample_weight_config must be set to create a weighted dataset.")
+        self._dataset = dataset
+        self._config = data_config.sample_weight_config
+        self._source_ranges = _load_source_ranges(dataset_root)
+        self._episode_lengths = _load_episode_lengths(dataset_root)
+        self._episode_start_indices = _episode_start_indices(self._episode_lengths)
+        self._hil_episode_indices = _load_hil_episode_indices(dataset_root, self._config)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        sample = typing.cast(dict, self._dataset[index])
+        episode_index = _scalar_int(sample.get("episode_index"))
+        global_frame_index = _scalar_int(sample.get("index"))
+        frame_index = _frame_index(sample, episode_index, global_frame_index, self._episode_start_indices)
+        source_path = _source_for_episode(self._source_ranges, episode_index)
+        source_weight = _source_weight(
+            source_path,
+            episode_index,
+            frame_index,
+            self._episode_lengths.get(episode_index),
+            sample,
+            self._hil_episode_indices,
+            self._config,
+        )
+        progress_weight = _progress_weight(source_path, episode_index, frame_index, self._episode_lengths, self._config)
+        return {**sample, "sample_weight": np.asarray(source_weight * progress_weight, dtype=np.float32)}
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+
+def _load_source_ranges(dataset_root: pathlib.Path) -> list[tuple[int, int, str]]:
+    sources_path = dataset_root / "meta" / "sources.jsonl"
+    if not sources_path.exists():
+        logging.warning("No merge provenance found at %s; weighted dataset will use default weights.", sources_path)
+        return []
+
+    ranges = []
+    with sources_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            source = json.loads(line)
+            ranges.append(
+                (
+                    int(source["episode_index_start"]),
+                    int(source["episode_index_end"]),
+                    str(source.get("source_path", "")),
+                )
+            )
+    return ranges
+
+
+def _load_episode_lengths(dataset_root: pathlib.Path) -> dict[int, int]:
+    episodes_path = dataset_root / "meta" / "episodes.jsonl"
+    if not episodes_path.exists():
+        return {}
+
+    lengths = {}
+    with episodes_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            episode = json.loads(line)
+            lengths[int(episode["episode_index"])] = int(episode["length"])
+    return lengths
+
+
+def _load_hil_episode_indices(dataset_root: pathlib.Path, config: _config.SampleWeightConfig) -> set[int]:
+    """Find success-and-hil episodes that actually contain teleop frames.
+
+    The official dataset README defines an HIL episode as one whose
+    `observation.commander_state` contains both `inference` and `teleop`.
+    """
+    data_root = dataset_root / "data"
+    if not data_root.exists():
+        return set()
+
+    hil_episodes = set()
+    try:
+        import pandas as pd
+    except ImportError:
+        logging.warning("pandas unavailable; falling back to per-frame HIL mode weighting only.")
+        return hil_episodes
+
+    for parquet_path in data_root.rglob("episode_*.parquet"):
+        try:
+            df = pd.read_parquet(parquet_path, columns=["episode_index", config.commander_state_key])
+        except Exception:
+            continue
+
+        if config.commander_state_key not in df:
+            continue
+        modes = {_string_value(mode) for mode in df[config.commander_state_key].to_numpy()}
+        if modes.intersection(config.autonomous_modes) and modes.intersection(config.teleop_modes):
+            episode_index = _scalar_int(df["episode_index"].iloc[0]) if "episode_index" in df else None
+            if episode_index is not None:
+                hil_episodes.add(episode_index)
+    return hil_episodes
+
+
+def _scalar_int(value) -> int | None:
+    if value is None:
+        return None
+    arr = np.asarray(value)
+    if arr.size == 0:
+        return None
+    return int(arr.reshape(-1)[0])
+
+
+def _string_value(value) -> str:
+    arr = np.asarray(value)
+    if arr.size == 0:
+        return ""
+    value = arr.reshape(-1)[0]
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
+def _sample_get(sample: dict, key: str):
+    if key in sample:
+        return sample[key]
+    current = sample
+    for part in key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _episode_start_indices(episode_lengths: dict[int, int]) -> dict[int, int]:
+    starts = {}
+    next_start = 0
+    for episode_index, length in sorted(episode_lengths.items()):
+        starts[episode_index] = next_start
+        next_start += length
+    return starts
+
+
+def _frame_index(
+    sample: dict,
+    episode_index: int | None,
+    global_frame_index: int | None,
+    episode_start_indices: dict[int, int],
+) -> int | None:
+    frame_index = _scalar_int(sample.get("frame_index"))
+    if frame_index is not None:
+        return frame_index
+    if episode_index is None or global_frame_index is None:
+        return None
+    start_index = episode_start_indices.get(episode_index)
+    if start_index is None:
+        return None
+    return global_frame_index - start_index
+
+
+def _source_for_episode(source_ranges: list[tuple[int, int, str]], episode_index: int | None) -> str:
+    if episode_index is None:
+        return ""
+    for start, end, source_path in source_ranges:
+        if start <= episode_index <= end:
+            return source_path
+    return ""
+
+
+def _source_weight(
+    source_path: str,
+    episode_index: int | None,
+    frame_index: int | None,
+    episode_length: int | None,
+    sample: dict,
+    hil_episode_indices: set[int],
+    config: _config.SampleWeightConfig,
+) -> float:
+    source = source_path.lower()
+    if any(pattern in source for pattern in config.success_and_hil_patterns):
+        return _success_and_hil_weight(episode_index, frame_index, episode_length, sample, hil_episode_indices, config)
+    if any(pattern in source for pattern in config.hil_patterns):
+        return _hil_weight(frame_index, episode_length, sample, config, is_hil_episode=True)
+    if any(pattern in source for pattern in config.success_patterns):
+        return config.success_weight
+    if any(pattern in source for pattern in config.failure_patterns):
+        return config.failure_weight
+    if any(pattern in source for pattern in config.expert_patterns):
+        return config.expert_weight
+    return config.default_weight
+
+
+def _success_and_hil_weight(
+    episode_index: int | None,
+    frame_index: int | None,
+    episode_length: int | None,
+    sample: dict,
+    hil_episode_indices: set[int],
+    config: _config.SampleWeightConfig,
+) -> float:
+    mode = _commander_mode(sample, config)
+    if mode in config.teleop_modes:
+        return config.hil_correction_weight
+    if mode in config.transition_modes:
+        return config.hil_transition_weight
+    if mode in config.restore_modes:
+        return config.hil_restore_weight
+    if mode in config.autonomous_modes:
+        if episode_index in hil_episode_indices:
+            return config.hil_pre_takeover_weight
+        return config.success_weight
+    return _hil_weight(frame_index, episode_length, sample, config, is_hil_episode=episode_index in hil_episode_indices)
+
+
+def _hil_weight(
+    frame_index: int | None,
+    episode_length: int | None,
+    sample: dict,
+    config: _config.SampleWeightConfig,
+    *,
+    is_hil_episode: bool,
+) -> float:
+    mode = _commander_mode(sample, config)
+    if mode in config.teleop_modes:
+        return config.hil_correction_weight
+    if mode in config.transition_modes:
+        return config.hil_transition_weight
+    if mode in config.restore_modes:
+        return config.hil_restore_weight
+    if mode in config.autonomous_modes:
+        return config.hil_pre_takeover_weight if is_hil_episode else config.success_weight
+
+    for key in config.hil_takeover_keys:
+        value = _sample_get(sample, key)
+        if value is not None:
+            return config.hil_correction_weight if bool(np.asarray(value).reshape(-1)[0]) else config.hil_pre_takeover_weight
+
+    if frame_index is None or not episode_length or episode_length <= 1:
+        return config.hil_pre_takeover_weight
+
+    progress = min(max(frame_index / float(episode_length - 1), 0.0), 1.0)
+    if progress >= config.hil_correction_start_fraction:
+        return config.hil_correction_weight
+    return config.hil_pre_takeover_weight
+
+
+def _commander_mode(sample: dict, config: _config.SampleWeightConfig) -> str:
+    value = _sample_get(sample, config.commander_state_key)
+    if value is None:
+        return ""
+    return _string_value(value)
+
+
+def _progress_weight(
+    source_path: str,
+    episode_index: int | None,
+    frame_index: int | None,
+    episode_lengths: dict[int, int],
+    config: _config.SampleWeightConfig,
+) -> float:
+    source = source_path.lower()
+    if not any(pattern in source for pattern in config.failure_patterns):
+        return 1.0
+    if episode_index is None or frame_index is None:
+        return 1.0
+
+    length = episode_lengths.get(episode_index)
+    if not length or length <= 1:
+        return 1.0
+
+    progress = min(max(frame_index / float(length - 1), 0.0), 1.0)
+    if progress <= config.failure_prefix_keep_fraction:
+        return 1.0
+    if progress >= config.failure_tail_zero_fraction:
+        return 0.0
+    span = config.failure_tail_zero_fraction - config.failure_prefix_keep_fraction
+    if span <= 0:
+        return 0.0
+    return 1.0 - (progress - config.failure_prefix_keep_fraction) / span
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -148,6 +432,10 @@ def create_torch_dataset(
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    if data_config.sample_weight_config is not None:
+        if data_config.local_files_path is None:
+            raise ValueError("sample_weight_config requires local_files_path so merge provenance can be loaded.")
+        dataset = WeightedLeRobotDataset(dataset, data_config, pathlib.Path(data_config.local_files_path))
 
     return dataset
 
@@ -538,4 +826,8 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            sample_weight = batch.pop("sample_weight", None)
+            if sample_weight is None:
+                yield _model.Observation.from_dict(batch), batch["actions"]
+            else:
+                yield _model.Observation.from_dict(batch), batch["actions"], sample_weight

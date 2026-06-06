@@ -661,12 +661,12 @@ _CONFIGS = [
             repo_id="challenge/multitask-positive",
             base_config=DataConfig(
                 prompt_from_task=True,
-                local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-positive",
+                local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-positive",
                 sample_weight_config=SampleWeightConfig(
                     expert_weight=1.0,
-                    success_weight=1.3,
+                    success_weight=0.8,
                     hil_pre_takeover_weight=0.35,
-                    hil_correction_weight=2.0,
+                    hil_correction_weight=1.0,
                     hil_transition_weight=0.0,
                     hil_restore_weight=0.0,
                 ),
@@ -676,16 +676,16 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=2_000,
-            peak_lr=2.5e-5,
-            decay_steps=600_000,
-            decay_lr=2.5e-6,
+            warmup_steps=1_000,
+            peak_lr=3e-5,
+            decay_steps=80_000,
+            decay_lr=3e-6,
         ),
-        num_train_steps=600_000,
-        batch_size=32,
-        num_workers=64,
-        save_interval=40_000,
-        keep_period=40_000,
+        num_train_steps=80_000,
+        batch_size=256,
+        num_workers=48,
+        save_interval=10_000,
+        keep_period=10_000,
     ),
     TrainConfig(
         name="pi05_multitask-weighted",
@@ -694,7 +694,7 @@ _CONFIGS = [
             repo_id="challenge/multitask-weighted",
             base_config=DataConfig(
                 prompt_from_task=True,
-                local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-weighted",
+                local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-weighted",
                 sample_weight_config=SampleWeightConfig(
                     expert_weight=1.0,
                     success_weight=1.3,
@@ -733,7 +733,7 @@ _CONFIGS = [
         repo_id="challenge/multitask-generalist",
         base_config=DataConfig(
             prompt_from_task=True,
-            local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/multitask-generalist/expert-data",
+            local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-generalist/expert-data",
         ),
         use_delta_joint_actions=True,
         adapt_to_pi=True,
@@ -749,7 +749,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="insert-mouse-battery/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/insert-mouse-battery/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/insert-mouse-battery/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -764,7 +764,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="seal-water-bottle-cap/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/seal-water-bottle-cap/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/seal-water-bottle-cap/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),
@@ -779,7 +779,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=DualYamDataConfig(
             repo_id="tower-of-hanoi-game/expert-data",
-            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/Challenge-phase1-dataset/tower-of-hanoi-game/expert-data"),
+            base_config=DataConfig(prompt_from_task=True,  local_files_path="/root/autodl-tmp/challenge/hf_lerobot/tower-of-hanoi-game/expert-data"),
             use_delta_joint_actions=True,
             adapt_to_pi=True
         ),

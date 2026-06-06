@@ -733,7 +733,7 @@ _CONFIGS = [
         repo_id="challenge/multitask-generalist",
         base_config=DataConfig(
             prompt_from_task=True,
-            local_files_path="/root/autodl-tmp/challenge/hf_lerobot/multitask-generalist/expert-data",
+            local_files_path="/dev/shm/openpi-data/multitask-generalist/expert-data",
         ),
         use_delta_joint_actions=True,
         adapt_to_pi=True,

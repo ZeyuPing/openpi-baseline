@@ -1,7 +1,7 @@
 #!/bin/bash
-export OPENPI_DATA_HOME="/root/autodl-tmp/challenge/openpi_data"
-export HF_LEROBOT_HOME="/root/autodl-tmp/challenge/hf_lerobot"
-export HF_HOME="/root/autodl-tmp/challenge/hf_home"
+export OPENPI_DATA_HOME="/data/openpi_data"
+export HF_LEROBOT_HOME="/dev/shm/openpi-data"
+export HF_HOME="/data/hf_home"
 
 
 echo "Environment variables set:"

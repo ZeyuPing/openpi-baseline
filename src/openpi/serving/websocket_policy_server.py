@@ -52,12 +52,28 @@ class WebsocketPolicyServer:
         packer = msgpack_numpy.Packer()
 
         await websocket.send(packer.pack(self._metadata))
+        logger.info("Sent metadata to %s: %s", websocket.remote_address, self._metadata)
 
         prev_total_time = None
+        request_count = 0
         while True:
             try:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
+                request_count += 1
+                images = obs.get("images", {}) if isinstance(obs, dict) else {}
+                image_shapes = {
+                    key: getattr(value, "shape", None)
+                    for key, value in images.items()
+                } if isinstance(images, dict) else {}
+                logger.info(
+                    "Request #%d from %s: image_shapes=%s state_shape=%s prompt=%r",
+                    request_count,
+                    websocket.remote_address,
+                    image_shapes,
+                    getattr(obs.get("state"), "shape", None) if isinstance(obs, dict) else None,
+                    obs.get("prompt") if isinstance(obs, dict) else None,
+                )
 
                 infer_time = time.monotonic()
                 async with self._infer_lock:
@@ -73,11 +89,22 @@ class WebsocketPolicyServer:
 
                 await websocket.send(packer.pack(action))
                 prev_total_time = time.monotonic() - start_time
+                actions = action.get("actions") if isinstance(action, dict) else None
+                logger.info(
+                    "Response #%d to %s: actions_shape=%s actions_dtype=%s infer_ms=%.1f total_ms=%.1f",
+                    request_count,
+                    websocket.remote_address,
+                    getattr(actions, "shape", None),
+                    getattr(actions, "dtype", None),
+                    infer_time * 1000,
+                    prev_total_time * 1000,
+                )
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
             except Exception:
+                logger.exception("Request #%d from %s failed", request_count, websocket.remote_address)
                 await websocket.send(traceback.format_exc())
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,

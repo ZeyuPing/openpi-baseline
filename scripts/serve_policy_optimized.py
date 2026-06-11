@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optimized policy server with temporal ensembling and tunable denoising.
+"""Optimized policy server with short-horizon serving and tunable denoising.
 
 Three inference-time optimizations over the vanilla serve_policy.py:
 
@@ -14,11 +14,10 @@ Three inference-time optimizations over the vanilla serve_policy.py:
      steps even if their own default horizon is 50.  The remaining model
      steps overlap with the next query and are used for temporal ensembling.
 
-  3. **Noise-space ensembling**  (--noise-ensembling, default True)
-     The overlapping part of the flow-matching noise sequence is shifted
-     forward across queries.  Action-space blending is disabled by default
-     (--blend-alpha 0.0) so each returned action comes from the current
-     observation's model output.
+  3. **Original action output by default**
+     Action-space blending and noise-space ensembling are both disabled by
+     default so each returned action comes from the current observation's
+     model output.  Both remain available as explicit ablation flags.
 
 Usage:
   uv run scripts/serve_policy_optimized.py \\
@@ -56,7 +55,7 @@ logger = logging.getLogger("serve_optimized")
 
 
 # ---------------------------------------------------------------------------
-# Temporal Ensembling wrapper
+# Short-horizon serving wrapper
 # ---------------------------------------------------------------------------
 
 class TemporalEnsemblingPolicy:
@@ -95,7 +94,7 @@ class TemporalEnsemblingPolicy:
         execute_horizon: int = 20,
         return_horizon: int | None = None,
         blend_alpha: float = 0.0,
-        noise_ensembling: bool = True,
+        noise_ensembling: bool = False,
     ) -> None:
         """
         Args:
@@ -112,7 +111,7 @@ class TemporalEnsemblingPolicy:
                              steps are dominated by the fresh prediction. Set
                              to 0.0 to disable action-space blending and keep
                              the current model output untouched.
-            noise_ensembling: Enable consistent noise sampling across queries.
+            noise_ensembling: Enable shifted noise reuse across queries.
         """
         self._base = base_policy
         self._execute_horizon = execute_horizon
@@ -177,7 +176,7 @@ class TemporalEnsemblingPolicy:
             self.reset()
         self._last_query_time = now
 
-        # 1. Prepare consistent noise sequence (Noise-Space Temporal Ensembling)
+        # 1. Optionally prepare a shifted noise sequence for flow sampling.
         noise_arg = None
         if self._noise_ensembling:
             if self._prev_noise is None:
@@ -305,14 +304,13 @@ class Args:
     # Default in openpi is 10; 20 gives better quality at ~2× latency.
     num_denoise_steps: int = 20
 
-    # ── Temporal ensembling ────────────────────────────────────────────────
-    # Enable / disable temporal ensembling.
+    # ── Short-horizon serving / optional ensembling ────────────────────────
+    # Enable the wrapper that returns a short chunk and can optionally ensemble.
     temporal_ensembling: bool = True
 
-    # Enable / disable noise-space ensembling (consistent noise sampling).
-    # Reuses and shifts the noise vector for the overlapping steps of flow-matching denoising.
-    # Highly recommended for physics/mode consistency.
-    noise_ensembling: bool = True
+    # Enable / disable noise-space ensembling. Disabled by default to stay
+    # closest to the model's original flow-matching sampling distribution.
+    noise_ensembling: bool = False
 
     # How many steps the client will execute before re-querying.
     # For third-party clients like policy_deployment/check_in_sim.py, this is
@@ -344,7 +342,7 @@ def main(args: Args) -> None:
     advertised_horizon = args.return_horizon if args.temporal_ensembling else train_config.model.action_horizon
     policy_metadata = _build_metadata(policy.metadata, advertised_horizon)
 
-    # ── Wrap with temporal ensembling ──────────────────────────────────────
+    # ── Wrap with short-horizon serving / optional ensembling ──────────────
     if args.temporal_ensembling:
         policy = TemporalEnsemblingPolicy(
             policy,
@@ -354,11 +352,11 @@ def main(args: Args) -> None:
             noise_ensembling=args.noise_ensembling,
         )
         logger.info(
-            "Temporal ensembling ON: execute_horizon=%d return_horizon=%d blend_alpha=%.2f noise_ensembling=%s",
+            "Short-horizon serving ON: execute_horizon=%d return_horizon=%d blend_alpha=%.2f noise_ensembling=%s",
             args.execute_horizon, args.return_horizon, args.blend_alpha, args.noise_ensembling,
         )
     else:
-        logger.info("Temporal ensembling OFF")
+        logger.info("Short-horizon serving OFF")
 
     # ── Launch server ──────────────────────────────────────────────────────
     hostname = socket.gethostname()

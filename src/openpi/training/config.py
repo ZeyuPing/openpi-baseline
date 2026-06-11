@@ -610,7 +610,7 @@ class TrainConfig:
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = None
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -685,7 +685,7 @@ _CONFIGS = [
         batch_size=256,
         num_workers=48,
         save_interval=10_000,
-        keep_period=10_000,
+        keep_period=None,
     ),
     TrainConfig(
         name="pi05_multitask-weighted",
@@ -724,7 +724,7 @@ _CONFIGS = [
         batch_size=32,
         num_workers=64,
         save_interval=20_000,
-        keep_period=20_000,
+        keep_period=None,
     ),
     TrainConfig(
     name="pi05_multitask-generalist",
